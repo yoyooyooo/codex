@@ -43,6 +43,11 @@ def main() -> int:
         help="Release version to publish, e.g. 0.20.0 (without the 'v' prefix)",
     )
     parser.add_argument(
+        "--repo",
+        default="yoyooyooo/codex",
+        help="GitHub repo owner/name to download from (default: yoyooyooo/codex)",
+    )
+    parser.add_argument(
         "--dir",
         type=Path,
         help=(
@@ -69,7 +74,7 @@ def main() -> int:
     download_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Download the artifact using gh
-    repo = "openai/codex"
+    repo = args.repo
     gh_cmd = [
         "gh",
         "release",
@@ -95,7 +100,7 @@ def main() -> int:
         return 1
 
     # 2) Publish to npm
-    npm_cmd = ["npm", "publish"]
+    npm_cmd = ["npm", "publish", "--access", "public", "--registry", "https://registry.npmjs.org/"]
     if args.dry_run:
         npm_cmd.append("--dry-run")
     npm_cmd.append(str(artifact_path))
