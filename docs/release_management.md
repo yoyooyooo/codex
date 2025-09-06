@@ -3,7 +3,7 @@
 Currently, we made Codex binaries available in three places:
 
 - GitHub Releases https://github.com/openai/codex/releases/
-- `@openai/codex` on npm: https://www.npmjs.com/package/@openai/codex
+- `@yojoyo/codex` on npm: https://www.npmjs.com/package/@yojoyo/codex
 - `codex` on Homebrew: https://formulae.brew.sh/formula/codex
 
 # Cutting a Release
@@ -30,7 +30,7 @@ VERSION=0.21.0
 ./scripts/publish_to_npm.py "$VERSION"
 ```
 
-Note that you must have permissions to publish to https://www.npmjs.com/package/@openai/codex for this to succeed.
+Note that you must have permissions to publish to https://www.npmjs.com/package/@yojoyo/codex for this to succeed.
 
 ## Publishing to Homebrew
 

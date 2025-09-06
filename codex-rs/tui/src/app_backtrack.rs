@@ -114,6 +114,7 @@ impl App {
     }
 
     /// Open transcript overlay (enters alternate screen and shows full transcript).
+    #[allow(dead_code)]
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.enter_alt_screen();
         self.overlay = Some(Overlay::new_transcript(self.transcript_lines.clone()));
@@ -153,6 +154,7 @@ impl App {
     }
 
     /// Open overlay and begin backtrack preview flow (first step + highlight).
+    #[allow(dead_code)]
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         self.open_transcript_overlay(tui);
         self.backtrack.overlay_preview_active = true;
@@ -293,7 +295,7 @@ impl App {
             let desc = if n == 1 {
                 Some("最近".to_string())
             } else {
-                Some(format!("{} 条之前", n))
+                Some(format!("{n} 条之前"))
             };
             let drop_count = n;
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {

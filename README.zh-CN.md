@@ -13,9 +13,9 @@ https://github.com/openai/codex
 
 ## 安装与命令名（Fork）
 
-- npm 包名：`@yoyo/codex`
+- npm 包名：`@yojoyo/codex`
 - 全局命令：`ycodex`（为避免与上游 `codex` 冲突而重命名）
-  - 安装：`npm i -g @yoyo/codex`
+  - 安装：`npm i -g @yojoyo/codex`
   - 运行：`ycodex`
 
 ## 分支与发布流程（概览）

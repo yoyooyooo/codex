@@ -1,5 +1,5 @@
 {
-  "name": "ycodex",
+  "name": "@yojoyo/codex",
   "version": "0.0.0-dev",
   "license": "Apache-2.0",
   "bin": {

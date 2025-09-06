@@ -15,9 +15,9 @@ exclusive features and a separate sync/release workflow while staying close to u
 
 ## Install & CLI Name (Fork)
 
-- npm package: `@yoyo/codex`
+- npm package: `@yojoyo/codex`
 - global binary: `ycodex` (renamed to avoid conflicts with the upstream `codex`)
-  - install: `npm i -g @yoyo/codex`
+  - install: `npm i -g @yojoyo/codex`
   - run: `ycodex`
 
 ## Sync and Release Workflow

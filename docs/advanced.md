@@ -7,9 +7,9 @@ Run Codex head-less in pipelines. Example GitHub Action step:
 ```yaml
 - name: Update changelog via Codex
   run: |
-    npm install -g @openai/codex
+    npm install -g @yojoyo/codex
     export OPENAI_API_KEY="${{ secrets.OPENAI_KEY }}"
-    codex exec --full-auto "update CHANGELOG for next release"
+    ycodex exec --full-auto "update CHANGELOG for next release"
 ```
 
 ## Tracing / verbose logging
