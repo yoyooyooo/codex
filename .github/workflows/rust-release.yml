@@ -172,6 +172,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -216,12 +218,35 @@ jobs:
           mv "${GITHUB_WORKSPACE}"/dist/npm/*.tgz \
              "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${{ steps.release_name.outputs.name }}.tgz"
 
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Generate release notes
+        id: gen_notes
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          current_tag="${{ github.ref_name }}"
+          # Previous rust-v* tag by creation time (newest before current, not equal to current)
+          prev_tag=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
+            | awk -v cur="$current_tag" '/^rust-v[0-9]/{ if ($0!=cur) { print $0; exit } }')
+          if [[ -n "${prev_tag}" ]]; then
+            echo "Using ancestor range: ${prev_tag}..${current_tag}"
+            git cliff --config ./cliff-release.toml "${prev_tag}..${current_tag}" --output RELEASE_NOTES.md
+          else
+            echo "No previous rust-v ancestor tag found; generating notes for ${current_tag} only"
+            git cliff --config ./cliff-release.toml --tag "${current_tag}" --output RELEASE_NOTES.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.release_name.outputs.name }}
           tag_name: ${{ github.ref_name }}
           files: dist/**
+          body_path: RELEASE_NOTES.md
           # Mark as prerelease only for -alpha/-beta/-rc. Publish -fork.* as normal releases.
           prerelease: ${{ steps.pre.outputs.is_prerelease == 'true' }}
 

@@ -45,3 +45,14 @@ Once everything builds, a Homebrew admin has to approve the PR. Again, the whole
 For reference, our Homebrew formula lives at:
 
 https://github.com/Homebrew/homebrew-core/blob/main/Formula/c/codex.rb
+
+## Release notes (auto-generated)
+
+- Release notes are generated automatically from commits using `git-cliff` when the `rust-release` workflow runs on a `rust-v<version>` tag.
+- Commit format: follow Conventional Commits (e.g., `feat(tui): ...`, `fix(core): ...`, `docs: ...`, `refactor: ...`, `ci: ...`).
+- Groups in the notes are derived from the commit type; breaking changes can be marked with `!` or a `BREAKING CHANGE:` trailer.
+- If you need a local preview:
+- One‑command local preview：`scripts/gen_release_notes.sh rust-vX.Y.Z ./RELEASE_NOTES.md`
+  - 逻辑：自动选取“上一个 rust-v* 标签（按创建时间的上一个）”，并用区间 `prev..current` 生成。
+  - 若机器已安装 `git-cliff`，生成内容与 CI 一致；否则回退为简要的 `git log` 列表。
+  - Or compare against the previous tag automatically by omitting `--tag` and running it on the release commit.
