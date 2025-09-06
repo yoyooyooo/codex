@@ -1254,6 +1254,22 @@ impl ChatWidget {
         );
     }
 
+    // ===== !Modify Start: 用户提问节点选择器 - 弹窗入口 =====
+    // !Modify[owner=yoyooyooo]: 打开“用户提问节点选择器”弹窗。仅显示用户的提问节点（首行作为预览），
+    // 选择项在 Enter 时发送 AppEvent::BacktrackTo(n)；Esc 取消。
+    // 作为“双击 Esc”的默认入口，Ctrl+T 仍可打开 Transcript，不冲突。
+    // !AI_GUIDANCE: 若上游在相同快捷键上增加新功能，请优先考虑共存（例如改键或提供配置开关）；
+    // 不能共存时请先询问用户是否保留本自定义逻辑。
+    pub(crate) fn open_backtrack_picker(&mut self, items: Vec<SelectionItem>) {
+        self.bottom_pane.show_selection_view(
+            "回退到历史提问".to_string(),
+            Some("仅列出用户的提问消息；选择后将回到该节点（丢弃其后上下文）".to_string()),
+            Some("↑/↓ 选择 · Enter 回退并编辑 · Esc 取消".to_string()),
+            items,
+        );
+    }
+    // ===== !Modify End: 用户提问节点选择器 - 弹窗入口 =====
+
     /// Set the approval policy in the widget's config copy.
     pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
         self.config.approval_policy = policy;

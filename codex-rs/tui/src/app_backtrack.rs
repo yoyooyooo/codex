@@ -8,6 +8,14 @@ use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+
+// ===== !Modify Start: 文件级说明（自定义回退入口） =====
+// !Modify[owner=yoyooyooo]: 自定义“用户提问节点选择器”入口：双击 Esc（第二次 Esc）在正常回溯
+// 模式下打开仅含用户提问节点的列表弹窗；↑/↓ 选择，Enter 回退并预填文本，Esc 取消。
+// 原 Transcript 仍可通过 Ctrl+T 打开；在转录中 Esc/Enter 的回溯预览保持可用。
+// !AI_GUIDANCE: 若与上游实现冲突，优先考虑共存（如改键/提供配置开关）。若无法共存，请先询问
+// 用户是否保留本自定义逻辑，再做替换或移除。
+// ===== !Modify End: 文件级说明（自定义回退入口） =====
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
 pub(crate) struct BacktrackState {
@@ -80,7 +88,12 @@ impl App {
             if !self.backtrack.primed {
                 self.prime_backtrack();
             } else if self.overlay.is_none() {
-                self.open_backtrack_preview(tui);
+                // ===== !Modify Start: 双击 Esc 进入“用户提问节点选择器” =====
+                // !Modify[owner=yoyooyooo]: 将原“第二次 Esc 打开 Transcript 并高亮选择”的行为
+                // 替换为“打开用户提问节点选择器”。Ctrl+T 仍可打开 Transcript，两者并存。
+                // !AI_GUIDANCE: 若上游在双 Esc 上添加/修改逻辑，请优先考虑共存；不能共存则询问用户。
+                self.open_user_nodes_picker();
+                // ===== !Modify End: 双击 Esc 进入“用户提问节点选择器” =====
             } else if self.backtrack.overlay_preview_active {
                 self.step_backtrack_and_highlight(tui);
             }
@@ -248,6 +261,79 @@ impl App {
         }
         self.reset_backtrack_state();
     }
+
+    // ===== !Modify Start: 用户提问节点选择器 - 构建与打开 =====
+    /// 打开“用户提问节点选择器”弹窗：仅列出用户消息节点，最近在上。
+    /// !Modify[owner=yoyooyooo]
+    /// !AI_GUIDANCE: 若上游改变用户消息头渲染/识别方式（"user" 头行），请同步更新查询逻辑；
+    /// 遇到不兼容变更请先询问用户。
+    pub(crate) fn open_user_nodes_picker(&mut self) {
+        use crate::bottom_pane::SelectionAction;
+        use crate::bottom_pane::SelectionItem;
+        // 进入列表弹窗后，清除底部的 Esc 提示以免干扰。
+        self.chat_widget.clear_esc_backtrack_hint();
+
+        // 枚举从最近到更早的用户消息，构造选择项。
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let mut n = 1usize; // 1 = 最近一次用户消息
+        loop {
+            if backtrack_helpers::find_nth_last_user_header_index(&self.transcript_lines, n)
+                .is_none()
+            {
+                break;
+            }
+            let preview = backtrack_helpers::nth_last_user_text(&self.transcript_lines, n)
+                .unwrap_or_default();
+            let first_line = preview.lines().next().unwrap_or("").trim().to_string();
+            let name = if first_line.is_empty() {
+                format!("(空消息) [{n}]")
+            } else {
+                first_line
+            };
+            let desc = if n == 1 {
+                Some("最近".to_string())
+            } else {
+                Some(format!("{} 条之前", n))
+            };
+            let drop_count = n;
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(crate::app_event::AppEvent::BacktrackTo(drop_count));
+            })];
+
+            items.push(SelectionItem {
+                name,
+                description: desc,
+                is_current: n == 1,
+                actions,
+            });
+            n += 1;
+        }
+
+        if items.is_empty() {
+            // 没有可回退的用户消息，取消 primed 状态即可。
+            self.reset_backtrack_state();
+            return;
+        }
+
+        self.chat_widget.open_backtrack_picker(items);
+    }
+
+    /// 处理来自选择器的确认：直接按所选 N（从最近起算）发起回溯。
+    /// !Modify[owner=yoyooyooo]: 自定义选择器的回调路径，与转录 overlay 的确认逻辑并行存在。
+    /// !AI_GUIDANCE: 若上游改变回溯协议/消息格式，保持语义一致；有不兼容需先询问用户。
+    pub(crate) fn confirm_backtrack_from_picker(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let Some(base_id) = self.chat_widget.session_id() else {
+            return;
+        };
+        let prefill =
+            backtrack_helpers::nth_last_user_text(&self.transcript_lines, n).unwrap_or_default();
+        self.request_backtrack(prefill, base_id, n);
+        self.reset_backtrack_state();
+    }
+    // ===== !Modify End: 用户提问节点选择器 - 构建与打开 =====
 
     /// Clear all backtrack-related state and composer hints.
     pub(crate) fn reset_backtrack_state(&mut self) {

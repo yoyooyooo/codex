@@ -259,6 +259,13 @@ impl App {
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
+            // ===== !Modify Start: 用户提问节点选择器 - 回退确认处理 =====
+            AppEvent::BacktrackTo(n) => {
+                // !Modify[owner=yoyooyooo]: 来自“用户节点选择器”的确认；按所选 N（1=最近）执行回退。
+                // !AI_GUIDANCE: 行为与 overlay 确认并行；若需变更，请评估共存可能，否则询问用户。
+                self.confirm_backtrack_from_picker(n);
+            }
+            // ===== !Modify End: 用户提问节点选择器 - 回退确认处理 =====
             AppEvent::ExitRequest => {
                 return Ok(false);
             }
