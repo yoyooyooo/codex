@@ -183,6 +183,7 @@ impl App {
                     {
                         return Ok(true);
                     }
+                    // !Modify: 清空提示到期自动重绘（移除额外心跳调度）
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
@@ -269,6 +270,9 @@ impl App {
             }
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
+            }
+            AppEvent::BacktrackTo(n) => {
+                self.confirm_backtrack_from_picker(n);
             }
             AppEvent::ExitRequest => {
                 return Ok(false);
@@ -372,17 +376,14 @@ impl App {
                 self.overlay = Some(Overlay::new_transcript(self.transcript_lines.clone()));
                 tui.frame_requester().schedule_frame();
             }
-            // Esc primes/advances backtracking only in normal (not working) mode
-            // with an empty composer. In any other state, forward Esc so the
-            // active UI (e.g. status indicator, modals, popups) handles it.
+            // Esc：正常编辑模式统一拦截，内部区分清空/回退。
+            // !Modify: Esc 统一拦截与分派（正常编辑模式）
             KeyEvent {
                 code: KeyCode::Esc,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             } => {
-                if self.chat_widget.is_normal_backtrack_mode()
-                    && self.chat_widget.composer_is_empty()
-                {
+                if self.chat_widget.is_normal_backtrack_mode() {
                     self.handle_backtrack_esc_key(tui);
                 } else {
                     self.chat_widget.handle_key_event(key_event);
@@ -400,14 +401,15 @@ impl App {
                 // Delegate to helper for clarity; preserves behavior.
                 self.confirm_backtrack_from_main();
             }
+            // !Modify: 非 Esc 键取消清空/回退 primed 状态
             KeyEvent {
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             } => {
-                // Any non-Esc key press should cancel a primed backtrack.
-                // This avoids stale "Esc-primed" state after the user starts typing
-                // (even if they later backspace to empty).
-                if key_event.code != KeyCode::Esc && self.backtrack.primed {
+                // 非 Esc 键取消清空/回退的 primed 状态。
+                if key_event.code != KeyCode::Esc
+                    && (self.backtrack.primed || self.backtrack.clear_primed_until.is_some())
+                {
                     self.reset_backtrack_state();
                 }
                 self.chat_widget.handle_key_event(key_event);

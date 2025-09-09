@@ -73,6 +73,8 @@ pub(crate) struct ChatComposer {
     history: ChatComposerHistory,
     ctrl_c_quit_hint: bool,
     esc_backtrack_hint: bool,
+    // !Modify: 清空提示截止时间（首次 Esc 有输入时出现，超时自动隐藏）
+    esc_clear_hint_deadline: Option<Instant>,
     use_shift_enter_hint: bool,
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
@@ -118,6 +120,7 @@ impl ChatComposer {
             history: ChatComposerHistory::new(),
             ctrl_c_quit_hint: false,
             esc_backtrack_hint: false,
+            esc_clear_hint_deadline: None,
             use_shift_enter_hint,
             dismissed_file_popup_token: None,
             current_file_query: None,
@@ -136,23 +139,38 @@ impl ChatComposer {
         this
     }
 
+    // !Modify: 清空提示激活时额外预留一行高度
     pub fn desired_height(&self, width: u16) -> u16 {
-        // Leave 1 column for the left border and 1 column for left padding
-        self.textarea
-            .desired_height(width.saturating_sub(LIVE_PREFIX_COLS))
-            + match &self.active_popup {
-                ActivePopup::None => FOOTER_HEIGHT_WITH_HINT,
-                ActivePopup::Command(c) => c.calculate_required_height(),
-                ActivePopup::File(c) => c.calculate_required_height(),
+        let base = self
+            .textarea
+            .desired_height(width.saturating_sub(LIVE_PREFIX_COLS));
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
+        let extra = match &self.active_popup {
+            ActivePopup::None => {
+                // 默认 footer 为 FOOTER_HEIGHT_WITH_HINT；清空提示时额外再加一行。
+                FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 }
             }
+            ActivePopup::Command(c) => c.calculate_required_height(),
+            ActivePopup::File(c) => c.calculate_required_height(),
+        };
+        base + extra
     }
 
+    // !Modify: 光标布局计算包含清空提示额外行
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let popup_constraint = match &self.active_popup {
-            ActivePopup::Command(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::None => Constraint::Max(FOOTER_HEIGHT_WITH_HINT),
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
+        let popup_height = match &self.active_popup {
+            ActivePopup::Command(popup) => popup.calculate_required_height(),
+            ActivePopup::File(popup) => popup.calculate_required_height(),
+            ActivePopup::None => FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 },
         };
+        let popup_constraint = Constraint::Max(popup_height);
         let [textarea_rect, _] =
             Layout::vertical([Constraint::Min(1), popup_constraint]).areas(area);
         let mut textarea_rect = textarea_rect;
@@ -314,6 +332,10 @@ impl ChatComposer {
     pub fn set_ctrl_c_quit_hint(&mut self, show: bool, has_focus: bool) {
         self.ctrl_c_quit_hint = show;
         self.set_has_focus(has_focus);
+    }
+
+    pub(crate) fn set_esc_clear_hint_deadline(&mut self, until: Option<Instant>) {
+        self.esc_clear_hint_deadline = until;
     }
 
     pub(crate) fn insert_str(&mut self, text: &str) {
@@ -1231,11 +1253,15 @@ impl ChatComposer {
 
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         let (popup_constraint, hint_spacing) = match &self.active_popup {
             ActivePopup::Command(popup) => (Constraint::Max(popup.calculate_required_height()), 0),
             ActivePopup::File(popup) => (Constraint::Max(popup.calculate_required_height()), 0),
             ActivePopup::None => (
-                Constraint::Length(FOOTER_HEIGHT_WITH_HINT),
+                Constraint::Length(FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 }),
                 FOOTER_SPACING_HEIGHT,
             ),
         };
@@ -1249,15 +1275,24 @@ impl WidgetRef for ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::None => {
-                let hint_rect = if hint_spacing > 0 {
-                    let [_, hint_rect] = Layout::vertical([
+                let hint_area = if hint_spacing > 0 {
+                    let hint_lines_total = FOOTER_HINT_HEIGHT + if show_clear { 1 } else { 0 };
+                    let [_, hint_area] = Layout::vertical([
                         Constraint::Length(hint_spacing),
-                        Constraint::Length(FOOTER_HINT_HEIGHT),
+                        Constraint::Length(hint_lines_total),
                     ])
                     .areas(popup_rect);
-                    hint_rect
+                    hint_area
                 } else {
                     popup_rect
+                };
+                // !Modify: 底部提示：清空提示激活时拆为两行渲染
+                let (bottom_line_rect, clear_line_rect) = if show_clear && hint_area.height >= 2 {
+                    let [r1, r2] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+                        .areas(hint_area);
+                    (r1, Some(r2))
+                } else {
+                    (hint_area, None)
                 };
                 let mut hint: Vec<Span<'static>> = if self.ctrl_c_quit_hint {
                     let ctrl_c_followup = if self.is_task_running {
@@ -1326,9 +1361,21 @@ impl WidgetRef for ChatComposer {
                     }
                 }
 
+                // !Modify: 清空提示窗口内，在末尾追加 Esc 提示以体现清空效果。
+                if show_clear && !self.ctrl_c_quit_hint {
+                    hint.push("   ".into());
+                    let weak = Style::default().fg(Color::DarkGray);
+                    hint.push(Span::from("Esc").style(weak));
+                    hint.push(Span::from(" clear").style(weak));
+                }
+
                 Line::from(hint)
                     .style(Style::default().dim())
-                    .render_ref(hint_rect, buf);
+                    .render_ref(bottom_line_rect, buf);
+
+                if let Some(r2) = clear_line_rect {
+                    Line::from(" Please Escape again to clear").render_ref(r2, buf);
+                }
             }
         }
         let border_style = if self.has_focus {

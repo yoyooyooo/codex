@@ -1290,6 +1290,16 @@ impl ChatWidget {
         );
     }
 
+    // !Modify: 用户提问节点选择器入口
+    pub(crate) fn open_backtrack_picker(&mut self, items: Vec<SelectionItem>) {
+        self.bottom_pane.show_selection_view(
+            "Backtrack to User Messages".to_string(),
+            Some("Only list user messages; selecting one will revert to that node (dropping subsequent context)".to_string()),
+            Some("↑/↓ 选择 · Enter 回退并编辑 · Esc 取消".to_string()),
+            items,
+        );
+    }
+
     /// Set the approval policy in the widget's config copy.
     pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
         self.config.approval_policy = policy;
@@ -1367,6 +1377,21 @@ impl ChatWidget {
     /// Replace the composer content with the provided text and reset cursor.
     pub(crate) fn set_composer_text(&mut self, text: String) {
         self.bottom_pane.set_composer_text(text);
+    }
+
+    /// !Modify: Clear composer text without affecting attachments/placeholders.
+    pub(crate) fn clear_composer_text(&mut self) {
+        self.bottom_pane.set_composer_text(String::new());
+    }
+
+    /// !Modify: Show the "Please Escape again to clear" hint for the given duration.
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: std::time::Duration) {
+        self.bottom_pane.show_esc_clear_hint_for(dur);
+    }
+
+    /// !Modify: Hide the "Please Escape again to clear" hint immediately.
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        self.bottom_pane.clear_esc_clear_hint();
     }
 
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
