@@ -1,5 +1,7 @@
 //! Bottom pane: shows the ChatComposer or a BottomPaneView, if one is active.
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::app_event_sender::AppEventSender;
 use crate::tui::FrameRequester;
@@ -13,7 +15,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
-use std::time::Duration;
 
 mod approval_modal_view;
 mod bottom_pane_view;
@@ -315,6 +316,22 @@ impl BottomPane {
             // Hide the status indicator when a task completes, but keep other modal views.
             self.status = None;
         }
+    }
+
+    /// Show a transient "Press Esc again to clear" hint for the given duration.
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: Duration) {
+        // !Modify: 显示清空提示窗口并安排到期重绘
+        let until = Instant::now() + dur;
+        self.composer.set_esc_clear_hint_deadline(Some(until));
+        self.request_redraw();
+        self.request_redraw_in(dur);
+    }
+
+    /// Clear the "Press Esc again to clear" hint immediately.
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        // !Modify: 清除清空提示窗口
+        self.composer.set_esc_clear_hint_deadline(None);
+        self.request_redraw();
     }
 
     /// Show a generic list selection view with the provided items.

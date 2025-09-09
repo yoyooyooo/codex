@@ -12,11 +12,15 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 
+use std::time::Duration;
+use std::time::Instant;
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
 pub(crate) struct BacktrackState {
     /// True when Esc has primed backtrack mode in the main view.
     pub(crate) primed: bool,
+    /// !Modify: If Some, indicates that within this deadline a second Esc should clear the composer.
+    pub(crate) clear_primed_until: Option<Instant>,
     /// Session id of the base conversation to fork from.
     pub(crate) base_id: Option<ConversationId>,
     /// Current step count (Nth last user message).
@@ -78,16 +82,32 @@ impl App {
     }
 
     /// Handle global Esc presses for backtracking when no overlay is present.
+    // !Modify: Esc 清空提示与回退分派
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
-        // Only handle backtracking when composer is empty to avoid clobbering edits.
-        if self.chat_widget.composer_is_empty() {
+        // 无覆盖层：非空→清空提示/二次清空；空→回退 prime/选择器。覆盖层预览下 Esc 步进。
+        if self.overlay.is_none() {
+            if !self.chat_widget.composer_is_empty() {
+                let now = Instant::now();
+                if let Some(deadline) = self.backtrack.clear_primed_until
+                    && now <= deadline
+                {
+                    self.chat_widget.clear_composer_text();
+                    self.chat_widget.clear_esc_clear_hint();
+                    self.backtrack.clear_primed_until = None;
+                    return;
+                }
+                self.backtrack.clear_primed_until = Some(now + Duration::from_secs(1));
+                self.chat_widget
+                    .show_esc_clear_hint_for(Duration::from_secs(1));
+                return;
+            }
             if !self.backtrack.primed {
                 self.prime_backtrack();
-            } else if self.overlay.is_none() {
-                self.open_backtrack_preview(tui);
-            } else if self.backtrack.overlay_preview_active {
-                self.step_backtrack_and_highlight(tui);
+            } else {
+                self.open_user_nodes_picker();
             }
+        } else if self.backtrack.overlay_preview_active {
+            self.step_backtrack_and_highlight(tui);
         }
     }
 
@@ -105,6 +125,7 @@ impl App {
     }
 
     /// Open transcript overlay (enters alternate screen and shows full transcript).
+    #[allow(dead_code)]
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.enter_alt_screen();
         self.overlay = Some(Overlay::new_transcript(self.transcript_lines.clone()));
@@ -136,14 +157,18 @@ impl App {
     }
 
     /// Initialize backtrack state and show composer hint.
+    // !Modify: prime 时仅在输入为空显示回退提示
     fn prime_backtrack(&mut self) {
         self.backtrack.primed = true;
         self.backtrack.count = 0;
         self.backtrack.base_id = self.chat_widget.conversation_id();
-        self.chat_widget.show_esc_backtrack_hint();
+        if self.chat_widget.composer_is_empty() {
+            self.chat_widget.show_esc_backtrack_hint();
+        }
     }
 
-    /// Open overlay and begin backtrack preview flow (first step + highlight).
+    // !Modify: 打开转录回退预览（测试/后续扩展预留）
+    #[allow(dead_code)]
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         self.open_transcript_overlay(tui);
         self.backtrack.overlay_preview_active = true;
@@ -152,7 +177,7 @@ impl App {
         self.step_backtrack_and_highlight(tui);
     }
 
-    /// When overlay is already open, begin preview mode and select latest user message.
+    // !Modify: 转录已打开时开始回退预览
     fn begin_overlay_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         self.backtrack.primed = true;
         self.backtrack.base_id = self.chat_widget.conversation_id();
@@ -162,7 +187,7 @@ impl App {
         tui.frame_requester().schedule_frame();
     }
 
-    /// Step selection to the next older user message and update overlay.
+    // !Modify: 转录预览中 Esc 逐步选择更早的用户消息
     fn step_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
         let next = self.backtrack.count.saturating_add(1);
         let sel = self.compute_backtrack_selection(tui, next);
@@ -253,13 +278,78 @@ impl App {
         self.reset_backtrack_state();
     }
 
+    /// !Modify: Open a picker listing only user message nodes (most recent first).
+    pub(crate) fn open_user_nodes_picker(&mut self) {
+        use crate::bottom_pane::SelectionAction;
+        use crate::bottom_pane::SelectionItem;
+        // 进入列表弹窗后，清除底部的 Esc 提示以免干扰。
+        self.chat_widget.clear_esc_backtrack_hint();
+
+        // 枚举从最近到更早的用户消息，构造选择项。
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let mut n = 1usize; // 1 = 最近一次用户消息
+        loop {
+            if backtrack_helpers::find_nth_last_user_header_index(&self.transcript_lines, n)
+                .is_none()
+            {
+                break;
+            }
+            let preview = backtrack_helpers::nth_last_user_text(&self.transcript_lines, n)
+                .unwrap_or_default();
+            let first_line = preview.lines().next().unwrap_or("").trim().to_string();
+            let name = if first_line.is_empty() {
+                format!("(空消息) [{n}]")
+            } else {
+                first_line
+            };
+            let desc = if n == 1 {
+                Some("最近".to_string())
+            } else {
+                Some(format!("{n} 条之前"))
+            };
+            let drop_count = n;
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(crate::app_event::AppEvent::BacktrackTo(drop_count));
+            })];
+
+            items.push(SelectionItem {
+                name,
+                description: desc,
+                is_current: n == 1,
+                actions,
+            });
+            n += 1;
+        }
+
+        if items.is_empty() {
+            // 没有可回退的用户消息，取消 primed 状态即可。
+            self.reset_backtrack_state();
+            return;
+        }
+
+        self.chat_widget.open_backtrack_picker(items);
+    }
+
+    pub(crate) fn confirm_backtrack_from_picker(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let Some(base_id) = self.chat_widget.conversation_id() else {
+            return;
+        };
+        let prefill =
+            backtrack_helpers::nth_last_user_text(&self.transcript_lines, n).unwrap_or_default();
+        self.request_backtrack(prefill, base_id, n);
+        self.reset_backtrack_state();
+    }
     /// Clear all backtrack-related state and composer hints.
     pub(crate) fn reset_backtrack_state(&mut self) {
         self.backtrack.primed = false;
+        self.backtrack.clear_primed_until = None;
         self.backtrack.base_id = None;
         self.backtrack.count = 0;
-        // In case a hint is somehow still visible (e.g., race with overlay open/close).
         self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
     }
 
     /// Handle a ConversationHistory response while a backtrack is pending.
