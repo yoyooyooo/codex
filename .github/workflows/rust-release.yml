@@ -260,9 +260,10 @@ jobs:
           # Mark as prerelease only for -alpha/-beta/-rc. Publish -fork.* as normal releases.
           prerelease: ${{ steps.pre.outputs.is_prerelease == 'true' }}
 
-      - uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-config.json
+      # Temporarily disabled - may cause "Not Found" error in forks
+      # - uses: facebook/dotslash-publish-release@v2
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   with:
+      #     tag: ${{ github.ref_name }}
+      #     config: .github/dotslash-config.json
