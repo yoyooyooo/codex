@@ -13,6 +13,41 @@ Run `just fmt` (in `codex-rs` directory) automatically after making Rust code ch
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test --all-features`.
 When running interactively, ask the user before running `just fix` to finalize. `just fmt` does not require approval. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
+## Change Annotation & Minimal-Conflict Policy
+
+To keep our fork easy to sync with upstream and reduce merge conflicts, follow these rules for any custom changes (features, fixes, experiments):
+
+- Use a single-line leading comment marker exactly: `// !Modify: <short description>`.
+  - Place it at the smallest scope that conveys intent (function signature, match arm, or key statement).
+  - Keep it on one line; avoid multi-line banners like “Modify Start/End”.
+  - Prefer English for consistency unless the file is already localized.
+
+- Minimize diffs aggressively:
+  - Inject behavior at existing extension points rather than moving code. Example: centralize Esc handling at the existing app-level gate (e.g., “normal editing mode”), and delegate to a small helper for new behavior.
+  - Do not reformat, reorder, or rename unrelated code. Preserve function names, visibility, and file structure when possible.
+  - Prefer adding thin wrappers over changing existing call sites (e.g., add widget-level helpers instead of plumbing state through multiple layers).
+  - UI additions should reuse existing layout constructs. Only reserve extra space when the new UI is actually visible.
+  - Scheduling should favor one-shot timers (e.g., `request_redraw_in(...)`) instead of custom tick loops to reduce cross-layer coupling.
+
+- Conflict‑hygiene checklist before opening a PR:
+  - Search for large textual churn and shrink the change set to localized injections.
+  - Ensure every fork-specific behavior is tagged with `// !Modify:`.
+  - Prefer keeping upstream logic intact; if upstream refactors collide, move the injection point but keep the semantics identical.
+  - Run `just fmt`, then `cargo test -p <crate>`; if touching common/core/protocol, also run `cargo test --all-features`.
+
+- Upstream sync workflow tips:
+  - After merging upstream, compare your touched files against `upstream/main` and re-scope diffs to the smallest possible patch.
+  - Keep `// !Modify:` markers stable and near their logic; if code moves, relocate the marker with the logic.
+  - Avoid broad comment blocks; prefer the one-line marker to reduce text-only conflicts.
+
+### Example patterns (TUI/Esc behavior)
+
+- Gate Esc handling at the app level under an existing “normal editing” check, then delegate:
+  - `// !Modify: Esc 统一拦截与分派（正常编辑模式）`
+  - In the helper: composer non-empty → show 1s clear hint and on second Esc clear; empty → prime/advance backtrack.
+- UI hint lines: reuse existing footer layout; add one extra hint line only when needed.
+- State: prefer a minimal `Option<Instant>` deadline in the composer to track hint expiry; clear it in a central reset routine.
+
 ## TUI style conventions
 
 See `codex-rs/tui/styles.md`.
