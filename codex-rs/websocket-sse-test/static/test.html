@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket vs SSE 兼容性测试</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .test-panel {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .protocol-section {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .protocol-section.websocket {
+            border-color: #4CAF50;
+        }
+        .protocol-section.sse {
+            border-color: #2196F3;
+        }
+        .protocol-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .controls {
+            margin: 15px 0;
+        }
+        .controls button {
+            margin: 5px;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-connect {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-disconnect {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-test {
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-clear {
+            background-color: #6c757d;
+            color: white;
+        }
+        .metrics {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .metric-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: #fafafa;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .message {
+            margin: 2px 0;
+            padding: 2px 5px;
+        }
+        .message.sent {
+            background-color: #e3f2fd;
+        }
+        .message.received {
+            background-color: #f3e5f5;
+        }
+        .message.error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .test-controls {
+            text-align: center;
+            margin: 30px 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+        }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .comparison-table th,
+        .comparison-table td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        .comparison-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .comparison-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .environment-selector {
+            margin: 20px 0;
+            text-align: center;
+        }
+        .environment-selector select {
+            padding: 8px 15px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WebSocket vs SSE 兼容性测试</h1>
+            <p>测试不同网络环境下 WebSocket 和 Server-Sent Events 的性能与兼容性</p>
+        </div>
+
+        <div class="environment-selector">
+            <label for="environment">当前测试环境：</label>
+            <select id="environment">
+                <option value="direct">直连</option>
+                <option value="http-proxy">HTTP 代理</option>
+                <option value="https-proxy">HTTPS 代理</option>
+                <option value="firewall">限制性防火墙</option>
+                <option value="unstable">不稳定网络</option>
+            </select>
+        </div>
+
+        <div class="test-panel">
+            <div class="protocol-section websocket">
+                <h3>🔌 WebSocket</h3>
+                <div id="ws-status" class="status disconnected">未连接</div>
+                <div class="controls">
+                    <button class="btn-connect" onclick="connectWebSocket()">连接</button>
+                    <button class="btn-disconnect" onclick="disconnectWebSocket()">断开</button>
+                    <button class="btn-test" onclick="sendWebSocketTest()">发送测试</button>
+                    <button class="btn-clear" onclick="clearWebSocketMessages()">清空日志</button>
+                </div>
+                <div class="metrics">
+                    <h4>性能指标</h4>
+                    <div class="metrics-grid">
+                        <div class="metric-item">
+                            <span>连接时长:</span>
+                            <span id="ws-connection-time">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>发送消息:</span>
+                            <span id="ws-sent-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>接收消息:</span>
+                            <span id="ws-received-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>平均延迟:</span>
+                            <span id="ws-avg-latency">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>连接错误:</span>
+                            <span id="ws-error-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>重连次数:</span>
+                            <span id="ws-reconnect-count">0</span>
+                        </div>
+                    </div>
+                </div>
+                <div id="ws-messages" class="messages"></div>
+            </div>
+
+            <div class="protocol-section sse">
+                <h3>📡 Server-Sent Events</h3>
+                <div id="sse-status" class="status disconnected">未连接</div>
+                <div class="controls">
+                    <button class="btn-connect" onclick="connectSSE()">连接</button>
+                    <button class="btn-disconnect" onclick="disconnectSSE()">断开</button>
+                    <button class="btn-test" onclick="sendSSETest()">发送测试</button>
+                    <button class="btn-clear" onclick="clearSSEMessages()">清空日志</button>
+                </div>
+                <div class="metrics">
+                    <h4>性能指标</h4>
+                    <div class="metrics-grid">
+                        <div class="metric-item">
+                            <span>连接时长:</span>
+                            <span id="sse-connection-time">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>发送消息:</span>
+                            <span id="sse-sent-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>接收消息:</span>
+                            <span id="sse-received-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>平均延迟:</span>
+                            <span id="sse-avg-latency">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>连接错误:</span>
+                            <span id="sse-error-count">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span>重连次数:</span>
+                            <span id="sse-reconnect-count">0</span>
+                        </div>
+                    </div>
+                </div>
+                <div id="sse-messages" class="messages"></div>
+            </div>
+        </div>
+
+        <div class="test-controls">
+            <h3>批量测试控制</h3>
+            <button class="btn-test" onclick="runConnectionTest()">连接稳定性测试</button>
+            <button class="btn-test" onclick="runLatencyTest()">延迟性能测试</button>
+            <button class="btn-test" onclick="runThroughputTest()">吞吐量测试</button>
+            <button class="btn-test" onclick="runReconnectTest()">重连机制测试</button>
+            <button class="btn-clear" onclick="resetAllTests()">重置所有测试</button>
+        </div>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>指标</th>
+                    <th>WebSocket</th>
+                    <th>SSE</th>
+                    <th>优势方</th>
+                </tr>
+            </thead>
+            <tbody id="comparison-results">
+                <tr>
+                    <td>连接建立时间</td>
+                    <td id="comparison-ws-connect">-</td>
+                    <td id="comparison-sse-connect">-</td>
+                    <td id="comparison-connect-winner">-</td>
+                </tr>
+                <tr>
+                    <td>消息传输延迟</td>
+                    <td id="comparison-ws-latency">-</td>
+                    <td id="comparison-sse-latency">-</td>
+                    <td id="comparison-latency-winner">-</td>
+                </tr>
+                <tr>
+                    <td>连接稳定性</td>
+                    <td id="comparison-ws-stability">-</td>
+                    <td id="comparison-sse-stability">-</td>
+                    <td id="comparison-stability-winner">-</td>
+                </tr>
+                <tr>
+                    <td>重连成功率</td>
+                    <td id="comparison-ws-reconnect">-</td>
+                    <td id="comparison-sse-reconnect">-</td>
+                    <td id="comparison-reconnect-winner">-</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // 全局状态
+        let wsConnection = null;
+        let sseConnection = null;
+        let sessionId = generateSessionId();
+        let wsStats = resetStats();
+        let sseStats = resetStats();
+        let wsConnectTime = null;
+        let sseConnectTime = null;
+
+        function generateSessionId() {
+            return 'test-' + Math.random().toString(36).substr(2, 9);
+        }
+
+        function resetStats() {
+            return {
+                sent: 0,
+                received: 0,
+                errors: 0,
+                reconnects: 0,
+                latencies: [],
+                connectTime: null
+            };
+        }
+
+        function getCurrentEnvironment() {
+            return document.getElementById('environment').value;
+        }
+
+        // WebSocket 函数
+        function connectWebSocket() {
+            if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                return;
+            }
+
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}/ws?session_id=${sessionId}`;
+            
+            updateWSStatus('connecting', '正在连接...');
+            wsConnectTime = performance.now();
+            
+            wsConnection = new WebSocket(wsUrl);
+            
+            wsConnection.onopen = function(event) {
+                const connectLatency = performance.now() - wsConnectTime;
+                updateWSStatus('connected', `已连接 (${connectLatency.toFixed(2)}ms)`);
+                wsStats.connectTime = connectLatency;
+                addWSMessage('system', `WebSocket 连接建立，延迟: ${connectLatency.toFixed(2)}ms`);
+                updateWSMetrics();
+            };
+
+            wsConnection.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    const now = performance.now();
+                    const latency = now - message.timestamp;
+                    
+                    wsStats.received++;
+                    wsStats.latencies.push(latency);
+                    
+                    addWSMessage('received', `收到: ${message.content} (延迟: ${latency.toFixed(2)}ms)`);
+                    updateWSMetrics();
+                } catch (e) {
+                    addWSMessage('error', `消息解析错误: ${e.message}`);
+                    wsStats.errors++;
+                    updateWSMetrics();
+                }
+            };
+
+            wsConnection.onerror = function(event) {
+                addWSMessage('error', 'WebSocket 连接错误');
+                wsStats.errors++;
+                updateWSMetrics();
+            };
+
+            wsConnection.onclose = function(event) {
+                updateWSStatus('disconnected', '连接已关闭');
+                addWSMessage('system', `WebSocket 连接关闭 (代码: ${event.code})`);
+                
+                // 自动重连逻辑
+                if (!event.wasClean && wsStats.reconnects < 3) {
+                    setTimeout(() => {
+                        wsStats.reconnects++;
+                        addWSMessage('system', `尝试重连... (${wsStats.reconnects}/3)`);
+                        connectWebSocket();
+                    }, 2000 + wsStats.reconnects * 1000);
+                }
+            };
+        }
+
+        function disconnectWebSocket() {
+            if (wsConnection) {
+                wsConnection.close(1000, 'User initiated');
+                wsConnection = null;
+            }
+        }
+
+        function sendWebSocketTest() {
+            if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+                addWSMessage('error', 'WebSocket 未连接');
+                return;
+            }
+
+            const message = {
+                id: generateSessionId(),
+                timestamp: performance.now(),
+                content: `测试消息 ${wsStats.sent + 1}`,
+                message_type: 'Ping'
+            };
+
+            wsConnection.send(JSON.stringify(message));
+            wsStats.sent++;
+            addWSMessage('sent', `发送: ${message.content}`);
+            updateWSMetrics();
+        }
+
+        // SSE 函数
+        function connectSSE() {
+            if (sseConnection) {
+                disconnectSSE();
+            }
+
+            const sseUrl = `/sse?session_id=${sessionId}`;
+            updateSSEStatus('connecting', '正在连接...');
+            sseConnectTime = performance.now();
+
+            sseConnection = new EventSource(sseUrl);
+
+            sseConnection.onopen = function(event) {
+                const connectLatency = performance.now() - sseConnectTime;
+                updateSSEStatus('connected', `已连接 (${connectLatency.toFixed(2)}ms)`);
+                sseStats.connectTime = connectLatency;
+                addSSEMessage('system', `SSE 连接建立，延迟: ${connectLatency.toFixed(2)}ms`);
+                updateSSEMetrics();
+            };
+
+            sseConnection.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    const now = performance.now();
+                    const latency = now - message.timestamp;
+                    
+                    sseStats.received++;
+                    sseStats.latencies.push(latency);
+                    
+                    addSSEMessage('received', `收到: ${message.content} (延迟: ${latency.toFixed(2)}ms)`);
+                    updateSSEMetrics();
+                } catch (e) {
+                    addSSEMessage('error', `消息解析错误: ${e.message}`);
+                    sseStats.errors++;
+                    updateSSEMetrics();
+                }
+            };
+
+            sseConnection.onerror = function(event) {
+                addSSEMessage('error', 'SSE 连接错误');
+                sseStats.errors++;
+                updateSSEMetrics();
+                
+                // 自动重连逻辑
+                if (sseStats.reconnects < 3) {
+                    setTimeout(() => {
+                        sseStats.reconnects++;
+                        addSSEMessage('system', `尝试重连... (${sseStats.reconnects}/3)`);
+                        connectSSE();
+                    }, 2000 + sseStats.reconnects * 1000);
+                }
+            };
+        }
+
+        function disconnectSSE() {
+            if (sseConnection) {
+                sseConnection.close();
+                sseConnection = null;
+                updateSSEStatus('disconnected', '连接已关闭');
+            }
+        }
+
+        async function sendSSETest() {
+            const message = {
+                message_type: 'Broadcast',
+                content: `SSE 测试消息 ${sseStats.sent + 1}`
+            };
+
+            try {
+                const response = await fetch('/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(message)
+                });
+
+                const result = await response.json();
+                if (result.status === 'success') {
+                    sseStats.sent++;
+                    addSSEMessage('sent', `发送: ${message.content}`);
+                    updateSSEMetrics();
+                } else {
+                    addSSEMessage('error', `发送失败: ${result.error}`);
+                    sseStats.errors++;
+                }
+            } catch (e) {
+                addSSEMessage('error', `发送错误: ${e.message}`);
+                sseStats.errors++;
+                updateSSEMetrics();
+            }
+        }
+
+        // 状态更新函数
+        function updateWSStatus(type, message) {
+            const statusEl = document.getElementById('ws-status');
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+
+        function updateSSEStatus(type, message) {
+            const statusEl = document.getElementById('sse-status');
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+
+        function updateWSMetrics() {
+            document.getElementById('ws-connection-time').textContent = 
+                wsStats.connectTime ? `${wsStats.connectTime.toFixed(2)}ms` : '-';
+            document.getElementById('ws-sent-count').textContent = wsStats.sent;
+            document.getElementById('ws-received-count').textContent = wsStats.received;
+            document.getElementById('ws-avg-latency').textContent = 
+                wsStats.latencies.length > 0 
+                    ? `${(wsStats.latencies.reduce((a, b) => a + b, 0) / wsStats.latencies.length).toFixed(2)}ms`
+                    : '-';
+            document.getElementById('ws-error-count').textContent = wsStats.errors;
+            document.getElementById('ws-reconnect-count').textContent = wsStats.reconnects;
+        }
+
+        function updateSSEMetrics() {
+            document.getElementById('sse-connection-time').textContent = 
+                sseStats.connectTime ? `${sseStats.connectTime.toFixed(2)}ms` : '-';
+            document.getElementById('sse-sent-count').textContent = sseStats.sent;
+            document.getElementById('sse-received-count').textContent = sseStats.received;
+            document.getElementById('sse-avg-latency').textContent = 
+                sseStats.latencies.length > 0 
+                    ? `${(sseStats.latencies.reduce((a, b) => a + b, 0) / sseStats.latencies.length).toFixed(2)}ms`
+                    : '-';
+            document.getElementById('sse-error-count').textContent = sseStats.errors;
+            document.getElementById('sse-reconnect-count').textContent = sseStats.reconnects;
+        }
+
+        // 消息显示函数
+        function addWSMessage(type, message) {
+            const messagesEl = document.getElementById('ws-messages');
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+            messageEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function addSSEMessage(type, message) {
+            const messagesEl = document.getElementById('sse-messages');
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+            messageEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messagesEl.appendChild(messageEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function clearWebSocketMessages() {
+            document.getElementById('ws-messages').innerHTML = '';
+        }
+
+        function clearSSEMessages() {
+            document.getElementById('sse-messages').innerHTML = '';
+        }
+
+        // 批量测试函数
+        async function runConnectionTest() {
+            addWSMessage('system', '开始连接稳定性测试...');
+            addSSEMessage('system', '开始连接稳定性测试...');
+            
+            // 连续连接/断开测试
+            for (let i = 0; i < 5; i++) {
+                connectWebSocket();
+                connectSSE();
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                disconnectWebSocket();
+                disconnectSSE();
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        async function runLatencyTest() {
+            if (!wsConnection || !sseConnection) {
+                alert('请先建立 WebSocket 和 SSE 连接');
+                return;
+            }
+            
+            addWSMessage('system', '开始延迟测试...');
+            addSSEMessage('system', '开始延迟测试...');
+            
+            // 发送 20 条测试消息
+            for (let i = 0; i < 20; i++) {
+                sendWebSocketTest();
+                await sendSSETest();
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+
+        async function runThroughputTest() {
+            if (!wsConnection || !sseConnection) {
+                alert('请先建立 WebSocket 和 SSE 连接');
+                return;
+            }
+            
+            addWSMessage('system', '开始吞吐量测试...');
+            addSSEMessage('system', '开始吞吐量测试...');
+            
+            // 快速发送大量消息
+            const startTime = performance.now();
+            for (let i = 0; i < 100; i++) {
+                if (i % 2 === 0) {
+                    sendWebSocketTest();
+                } else {
+                    await sendSSETest();
+                }
+            }
+            const endTime = performance.now();
+            
+            addWSMessage('system', `吞吐量测试完成，耗时: ${(endTime - startTime).toFixed(2)}ms`);
+            addSSEMessage('system', `吞吐量测试完成，耗时: ${(endTime - startTime).toFixed(2)}ms`);
+        }
+
+        async function runReconnectTest() {
+            addWSMessage('system', '开始重连测试...');
+            addSSEMessage('system', '开始重连测试...');
+            
+            // 模拟网络中断
+            disconnectWebSocket();
+            disconnectSSE();
+            
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // 尝试重新连接
+            connectWebSocket();
+            connectSSE();
+        }
+
+        function resetAllTests() {
+            wsStats = resetStats();
+            sseStats = resetStats();
+            clearWebSocketMessages();
+            clearSSEMessages();
+            updateWSMetrics();
+            updateSSEMetrics();
+            sessionId = generateSessionId();
+        }
+
+        // 定期更新比较表
+        setInterval(() => {
+            if (wsStats.connectTime && sseStats.connectTime) {
+                document.getElementById('comparison-ws-connect').textContent = `${wsStats.connectTime.toFixed(2)}ms`;
+                document.getElementById('comparison-sse-connect').textContent = `${sseStats.connectTime.toFixed(2)}ms`;
+                document.getElementById('comparison-connect-winner').textContent = 
+                    wsStats.connectTime < sseStats.connectTime ? 'WebSocket' : 'SSE';
+            }
+            
+            if (wsStats.latencies.length > 0 && sseStats.latencies.length > 0) {
+                const wsAvgLatency = wsStats.latencies.reduce((a, b) => a + b, 0) / wsStats.latencies.length;
+                const sseAvgLatency = sseStats.latencies.reduce((a, b) => a + b, 0) / sseStats.latencies.length;
+                
+                document.getElementById('comparison-ws-latency').textContent = `${wsAvgLatency.toFixed(2)}ms`;
+                document.getElementById('comparison-sse-latency').textContent = `${sseAvgLatency.toFixed(2)}ms`;
+                document.getElementById('comparison-latency-winner').textContent = 
+                    wsAvgLatency < sseAvgLatency ? 'WebSocket' : 'SSE';
+            }
+            
+            const wsStability = wsStats.sent > 0 ? ((wsStats.sent - wsStats.errors) / wsStats.sent * 100).toFixed(1) : '0';
+            const sseStability = sseStats.sent > 0 ? ((sseStats.sent - sseStats.errors) / sseStats.sent * 100).toFixed(1) : '0';
+            
+            document.getElementById('comparison-ws-stability').textContent = `${wsStability}%`;
+            document.getElementById('comparison-sse-stability').textContent = `${sseStability}%`;
+            document.getElementById('comparison-stability-winner').textContent = 
+                parseFloat(wsStability) > parseFloat(sseStability) ? 'WebSocket' : 'SSE';
+            
+            const wsReconnectRate = wsStats.reconnects > 0 ? (wsStats.reconnects / (wsStats.reconnects + 1) * 100).toFixed(1) : '100';
+            const sseReconnectRate = sseStats.reconnects > 0 ? (sseStats.reconnects / (sseStats.reconnects + 1) * 100).toFixed(1) : '100';
+            
+            document.getElementById('comparison-ws-reconnect').textContent = `${wsReconnectRate}%`;
+            document.getElementById('comparison-sse-reconnect').textContent = `${sseReconnectRate}%`;
+            document.getElementById('comparison-reconnect-winner').textContent = 
+                parseFloat(wsReconnectRate) > parseFloat(sseReconnectRate) ? 'WebSocket' : 'SSE';
+        }, 1000);
+
+        // 页面加载完成后自动开始测试
+        document.addEventListener('DOMContentLoaded', function() {
+            // 可以在这里添加自动化测试逻辑
+        });
+    </script>
+</body>
+</html>

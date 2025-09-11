@@ -1,0 +1,22 @@
+{
+  "name": "websocket-sse-test",
+  "version": "1.0.0", 
+  "description": "WebSocket vs SSE compatibility testing tool",
+  "main": "test-runner.js",
+  "scripts": {
+    "test": "node test-runner.js",
+    "test:proxy": "node test-runner.js http://localhost:3000",
+    "start": "cargo run",
+    "build": "cargo build --release"
+  },
+  "dependencies": {
+    "ws": "^8.14.0",
+    "eventsource": "^2.0.2",
+    "http-proxy-agent": "^7.0.0",
+    "https-proxy-agent": "^7.0.2"
+  },
+  "devDependencies": {},
+  "keywords": ["websocket", "sse", "compatibility", "testing", "proxy"],
+  "author": "Codex Team",
+  "license": "MIT"
+}

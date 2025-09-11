@@ -1,0 +1,43 @@
+[package]
+name = "codex-integration-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 复用现有 codex 组件
+codex-core = { path = "../core" }
+codex-common = { path = "../common" }
+
+# 异步运行时
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+
+# 序列化和数据处理
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "2.0"
+
+# 文件系统和临时文件
+tempfile = "3"
+dirs = "6"
+
+# UUID 生成
+uuid = { version = "1", features = ["v4"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+# 测试断言
+pretty_assertions = "1.0"
+
+[features]
+# 启用详细调试日志
+debug = []
+
+[[bin]]
+name = "run-integration-test"
+path = "src/main.rs"
