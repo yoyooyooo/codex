@@ -45,6 +45,45 @@ That's it - Codex will scaffold a file, run it inside a sandbox, install any
 missing dependencies, and show you the live result. Approve the changes and
 they'll be committed to your working directory.
 
+### Quick: JSONL & “局部特性”一把梭
+
+想要不进入交互界面、直接一次性拿到结果（如提示词优化/摘要/标题）？有两条常见路径：
+
+- `codex exec --json`（快速原型）
+  - 查看事件类型：
+    ```bash
+    echo 'hi' | codex exec --json - | jq -rc 'select(.msg) | .msg.type'
+    ```
+  - 只取完整 Agent 文本：
+    ```bash
+    echo '把这句改写更简洁' | codex exec --json - | jq -rc 'select(.msg.type=="agent_message") | .msg.message'
+    ```
+  - 拿最终完整输出（JSON 模式不打印 task_complete，本命令将最终文本写到文件）：
+    ```bash
+    tmp=$(mktemp); echo '把这句改写更简洁' | codex exec --json --output-last-message "$tmp" - >/dev/null; cat "$tmp"; rm "$tmp"
+    ```
+  - 只输出文本、禁用工具（按需附加）：
+    ```bash
+    -c 'base_instructions=禁止调用任何工具，只输出最终文本。' \
+    -c include_plan_tool=false \
+    -c include_apply_patch_tool=false \
+    -c include_view_image_tool=false \
+    -c tools.web_search_request=false
+    ```
+
+- `codex proto`（标准协议流，适合自建前端/服务集成）
+  - 一次性提交并取最终文本：
+    ```bash
+    printf '%s\n' '{"id":"1","op":{"type":"user_input","items":[{"type":"text","text":"把这句改写更简洁"}]}}' \
+      | codex proto \
+      | jq -rc 'select(.msg.type=="task_complete") | .msg.last_agent_message'
+    ```
+
+更多细节与示例：
+- 专题文档（与主会话无关的局部模型调用）：
+  - 进程内（Rust）：docs/topics/local-capabilities/inprocess-rust.md
+  - 跨语言（子进程/协议流）：docs/topics/local-capabilities/cross-language.md
+
 ### Example prompts
 
 Below are a few bite-size examples you can copy-paste. Replace the text in quotes with your own task.
