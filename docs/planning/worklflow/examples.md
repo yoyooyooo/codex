@@ -75,6 +75,7 @@ steps:
 ## 低代码与脚手架
 
 ### 3) 页面脚手架（render_template + script）
+> 详见模板低代码说明：[render_template](./render_template.md)
 
 ```yaml
 name: scaffold_page
@@ -382,6 +383,8 @@ steps:
       pnpm exec playwright test --project=chromium --grep=@smoke --reporter=list
     artifacts:
       - {{ inputs.dir }}/playwright-report
+
+> 提示：结合 `fe_autofix` 与模板脚手架（见 [render_template](./render_template.md)）可在质量门禁以外加速新功能骨架搭建。
 ```
 
 ### 12) 包体积预算与报告

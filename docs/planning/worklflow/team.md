@@ -44,6 +44,11 @@
   - 设置合理的视觉差异阈值
   - 培训团队理解可访问性检查规则
 
+### 补充：模板低代码（强建议与第二阶段并行）
+- **内容**：结合 `render_template` + `script` 以模板化生成页面/路由/测试骨架，渲染多文件并在 diff 预览确认后写盘；复杂插入通过锚点脚本完成。
+- **价值**：统一风格、降低上手成本，新建/改造效率显著提升。
+- **落地**：参考 [render_template 说明](./render_template.md) 与示例工作流 `scaffold_page`（见 [examples](./examples.md)）。
+
 ### 第三阶段：维护与治理（按需）
 
 #### 5) 依赖升级与安全巡检（每月执行）
@@ -118,6 +123,7 @@
 - **快速本地体验**：
   - 提供 `quick=true` 输入参数跳过重型步骤（LHCI/visual diff），用于开发机自检
   - 在 TUI 侧提供 `/workflow run fe_pr_gate quick=true` 一键体验
+  - 对 `render_template` 步骤提供多文件 diff 预览（见 [render_template](./render_template.md)）
 - **错误诊断**：
   - 提供清晰的错误信息和修复建议
   - 建立常见问题的 troubleshooting 指南
@@ -249,4 +255,4 @@ steps:
 
 ---
 
-与 codex 的契合点：保留“确定性编排”骨架，局部由 `codex` 与 `mcp` 提供智能与外部能力，并通过标准化的质量关口把关，确保规模化协作下的质量与效率。
+与 codex 的契合点：保留“确定性编排”骨架，局部由 `codex` 与 `mcp` 提供智能与外部能力，并通过标准化的质量关口把关，确保规模化协作下的质量与效率。模板化能力详见 [render_template](./render_template.md)。

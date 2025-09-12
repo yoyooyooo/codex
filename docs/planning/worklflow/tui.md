@@ -12,7 +12,7 @@
   - 展示执行 DAG、`needs` 关系与默认参数。
 - `/workflow run <name> [k=v ...]`
   - 运行指定工作流；缺失的必填 `inputs` 将弹框交互补齐。
-  - 对于 `render_template` 步骤，在提交前显示多文件 diff 预览；支持直接从预览页批准/取消。
+  - 对于 `render_template` 步骤，在提交前显示多文件 diff 预览；支持直接从预览页批准/取消（详见 [render_template](./render_template.md)）。
 
 > 说明：当子功能进一步增多时，可保留 `/workflow` 作为命名空间，后接子命令。
 

@@ -47,7 +47,7 @@
   - `apply_patch`：用 `codex-apply-patch` 应用补丁（直接字符串或从文件读）。
   - `manual`：TUI 弹框确认；非交互（exec/CI）下根据 `skip_on_ci` 行为决定（失败或标记 skipped）。
   - `mcp`：用 `codex-mcp-client` 调用工具，导出结果。
-  - `render_template`：渲染 -> `git diff --no-index` 预览 -> 用户确认 -> 写盘；支持 dry‑run 与目标路径冲突检测。
+  - `render_template`：渲染 -> `git diff --no-index` 预览 -> 用户确认 -> 写盘；支持 dry‑run 与目标路径冲突检测（详见 [render_template](./render_template.md)）。
   - `script`：根据 shebang/扩展自动选择运行器（sh/node/ts-node）；stdout/stderr/退出码纳入统一事件。
 
 5) 事件与落盘
