@@ -123,3 +123,245 @@
 
 同时保持对模型侧的最大兼容：function/custon/shell 多入口一致落盘，开发者不必关心入口细节即可获得一致的安全与体验保障。
 
+## 时序流程（10 步到位）
+
+1. 模型产出工具调用：以 Function/CustomTool 或 `shell` 形式触发 `apply_patch`（可能是 heredoc 形态）。
+2. 命令预识别：`core/src/codex.rs::handle_container_exec_with_params()` 调 `codex_apply_patch::maybe_parse_apply_patch_verified(argv, cwd)` 尝试识别为补丁。
+3. Bash/heredoc 提取：`extract_apply_patch_from_bash()` 用 Tree‑sitter Bash 查询，支持可选的 `cd <path> &&` 前缀，抓取 heredoc 体与工作目录。
+4. 语法解析：`parser.rs::parse_patch()` 解析为 `Vec<Hunk>`（Add/Delete/Update+Move，`@@` 块等），宽松模式自动剥离 heredoc 包裹。
+5. 预计算变更：`maybe_parse_apply_patch_verified()` 基于磁盘现状构造 `ApplyPatchAction`：
+   - Add/Delete 读取原/新内容；
+   - Update 经 `unified_diff_from_chunks()` 生成新内容与 `unified_diff` 预览。
+6. 安全评估：`assess_patch_safety()` 依据审批策略与沙箱策略判断 AutoApprove/AskUser/Reject，并检查是否仅触达可写根。
+7. 用户审批（可选）：`request_patch_approval()` 展示变更摘要，等待 Approve/Deny/ApproveForSession。
+8. 受控执行封装：将命令重写为 `[ <codex_path>, "--codex-run-as-apply-patch", <PATCH> ]`，并选择沙箱（Seatbelt/Landlock/None）。
+9. 子进程应用补丁：`arg0` 分发命中隐藏参数 → `codex_apply_patch::apply_patch()` → `apply_hunks_to_files()` 落盘 → `print_summary()` 输出 A/M/D 摘要。
+10. 汇总回传：发送 `PatchApplyEnd` 与本回合 `TurnDiff`，并以 `FunctionCallOutput{content, success}` 反馈给模型与 UI。
+
+## 核心类型与函数对照
+
+- 解析建模：
+  - `ApplyPatchArgs`：原始补丁文本 + `hunks` + 可选 `workdir`。
+  - `Hunk::{AddFile, DeleteFile, UpdateFile}`；`UpdateFileChunk{ change_context, old_lines, new_lines, is_end_of_file }`。
+  - `parse_patch()`/`parse_one_hunk()`/`parse_update_file_chunk()`/`extract_apply_patch_from_bash()`。
+- 识别与验证：
+  - `maybe_parse_apply_patch()`（argv 粗识别）→ `maybe_parse_apply_patch_verified()`（读取磁盘、构造 `ApplyPatchAction`）。
+  - `ApplyPatchAction`、`ApplyPatchFileChange::{Add,Delete,Update{unified_diff,move_path,new_content}}`。
+- 匹配与替换：
+  - `compute_replacements()`：逐块顺序定位替换区间；
+  - `seek_sequence::seek_sequence()`：严格匹配 → 忽略尾空白 → 忽略首尾空白 → Unicode 标点/空白归一化匹配；支持 EOF 对齐与“去掉末尾空行哨兵”重试；
+  - `apply_replacements()`：按“从后往前”应用替换，避免位置漂移。
+- 落盘与展示：
+  - `apply_hunks_to_files()`：创建目录、写/删/移；
+  - `unified_diff_from_chunks*()`：以 `similar::TextDiff` 生成统一 diff；
+  - `print_summary()`：输出 Git 风格摘要。
+- 安全与审批：
+  - `assess_patch_safety()`、`assess_command_safety()`、`convert_apply_patch_to_protocol()`；
+  - `ApplyPatchExec` 与 `InternalApplyPatchInvocation`：决定直接输出/委托到受控 exec。
+
+## 调试与测试建议
+
+- 单元/集成测试：
+  - 解析与落盘测试集中在 `apply-patch/src/lib.rs` 与 `apply-patch/src/parser.rs` 的 `#[test]` 中（Add/Delete/Update/Move、EOF 插入、首尾行替换、Unicode dash 等）；
+  - 运行：`cargo test -p codex-apply-patch`。
+- 行为观察：
+  - 成功时 stdout 固定以 `Success. Updated the following files:` 开头，并按 A/M/D 枚举文件；
+  - 解析/匹配/IO 失败会写入 stderr 并返回非 0，消息含定界符/行号/文件路径，便于快速定位；
+  - 通过 `core` 路径执行时，还会看到 `PatchApplyBegin/End` 与整回合 `TurnDiff` 事件。
+- 常见排错：
+  - heredoc 被当作字面量：宽松模式会剥离 `<<'EOF' ... EOF`，但需保证首尾标记匹配；
+  - 命中 EOF 的替换：若 `old_lines`/`new_lines` 末尾包含空字符串（表示终止换行），匹配失败时会自动“去尾重试”；
+  - 空补丁或 Update 无块：解析期即报错；
+  - 写路径不在可写根：根据审批策略会 Ask/Reject。
+
+## 实操：直接用 Codex 主程序体验 apply_patch
+
+以下示例展示如何直接用 Codex 主程序二进制调用隐藏参数 `--codex-run-as-apply-patch` 来应用补丁（无需进入会话）。
+
+### 准备
+
+- 构建：
+  - 开发构建：`cargo build -p codex-cli`
+  - 发布构建：`cargo build -p codex-cli --release`
+- 二进制位置：
+  - 开发：`codex-rs/target/debug/codex`
+  - 发布：`codex-rs/target/release/codex`
+
+建议在一个临时目录演示（相对路径以当前工作目录为准）。
+
+### 示例 1：新增文件（macOS/Linux）
+
+```bash
+mkdir -p /tmp/codex-patch-demo && cd /tmp/codex-patch-demo
+
+PATCH="$(cat <<'EOF'
+*** Begin Patch
+*** Add File: demo.txt
++Hello
++Codex
+*** End Patch
+EOF
+)"
+
+# 任选一种方式运行（发布构建或 cargo 直接运行）
+<repo>/codex-rs/target/release/codex --codex-run-as-apply-patch "$PATCH"
+# 或者：
+cargo run -p codex-cli -- --codex-run-as-apply-patch "$PATCH"
+
+cat demo.txt  # 应看到两行：Hello / Codex
+```
+
+预期 stdout：
+
+```
+Success. Updated the following files:
+A /tmp/codex-patch-demo/demo.txt
+```
+
+### 示例 1（Windows/PowerShell）
+
+```powershell
+New-Item -ItemType Directory -Force -Path $env:TEMP\codex-patch-demo | Out-Null
+Set-Location $env:TEMP\codex-patch-demo
+
+$patch = @'
+*** Begin Patch
+*** Add File: demo.txt
++Hello
++Codex
+*** End Patch
+'@
+
+<repo>\codex-rs\target\release\codex.exe --codex-run-as-apply-patch $patch
+Get-Content .\demo.txt
+```
+
+### 示例 2：修改并重命名文件（macOS/Linux）
+
+```bash
+# 基于上一步已生成 demo.txt
+
+PATCH2="$(cat <<'EOF'
+*** Begin Patch
+*** Update File: demo.txt
+*** Move to: demo-renamed.txt
+@@
+-Hello
++Hello, Codex!
+*** End Patch
+EOF
+)"
+
+<repo>/codex-rs/target/release/codex --codex-run-as-apply-patch "$PATCH2"
+
+test ! -f demo.txt && echo "old removed ok"
+cat demo-renamed.txt
+```
+
+### 示例 2（Windows/PowerShell）
+
+```powershell
+$patch2 = @'
+*** Begin Patch
+*** Update File: demo.txt
+*** Move to: demo-renamed.txt
+@@
+-Hello
++Hello, Codex!
+*** End Patch
+'@
+
+<repo>\codex-rs\target\release\codex.exe --codex-run-as-apply-patch $patch2
+Test-Path .\demo.txt   # 应为 False
+Get-Content .\demo-renamed.txt
+```
+
+### 示例 3：在文件末尾追加（命中 EOF）
+
+```bash
+PATCH3="$(cat <<'EOF'
+*** Begin Patch
+*** Update File: demo-renamed.txt
+@@
++Appended line
+*** End of File
+*** End Patch
+EOF
+)"
+
+<repo>/codex-rs/target/release/codex --codex-run-as-apply-patch "$PATCH3"
+tail -n +1 demo-renamed.txt
+```
+
+### 补充说明
+
+- 参数与 stdin：有参时整个补丁必须作为“单个参数”传入；无参时从 stdin 读完整补丁。
+- heredoc/Here-String：
+  - Bash/Zsh 建议用单引号 heredoc 再 `$(...)` 包装为一个参数；
+  - PowerShell 建议用 Here-String（`@'... '@`）存入变量后传参。
+- 与会话模式差异：`--codex-run-as-apply-patch` 直达执行体，不走会话内的审批/沙箱/事件流。若要体验完整治理链路，请在会话中通过 shell 工具执行 `apply_patch <<'EOF' ... EOF`。
+
+## 格式对比：apply_patch vs git diff 与同类工具
+
+### 概览
+
+- apply_patch：为 LLM/自动化场景定制的精简补丁语言，强调可读、可审计、易解析、对上下文匹配容错。
+- git diff/unified diff：业界通用标准（Git/patch 工具链），信息更丰富（行号/偏移、权限、重命名检测、二进制等），生态兼容性最佳。
+- 其他同类：JSON Patch（结构化 JSON 文档）、ed 脚本、Mercurial patch 等，各有适用面。
+
+### 语法对比（新增文件示例）
+
+- apply_patch：
+
+```
+*** Begin Patch
+*** Add File: demo.txt
++Hello
++Codex
+*** End Patch
+```
+
+- git diff：
+
+```
+diff --git a/demo.txt b/demo.txt
+new file mode 100644
+index 0000000..aaaaaaaa
+--- /dev/null
++++ b/demo.txt
+@@ -0,0 +1,2 @@
++Hello
++Codex
+```
+
+主要差异：apply_patch 用“动作 + 行前缀”表达，无行号/偏移；git diff 含文件头/索引/模式与 hunk 行号。
+
+### 定位/匹配策略
+
+- apply_patch：不依赖行号/偏移；逐级宽容匹配（精确 → 忽略行尾空白 → 忽略首尾空白 → Unicode 标点/空白归一化），支持 `*** End of File`。更稳健于源文件存在微差异的场景（LLM 产出友好）。
+- git diff/patch：依赖 hunk 行号与上下文，具备 fuzz（上下文错位容忍）。更接近“可复现的版本控制语义”，生成时对 LLM 更苛刻。
+
+### 文件级元数据
+
+- apply_patch：动作显式（Add/Delete/Update），Update 可 `*** Move to:` 表示重命名；不携带权限/模式等元数据；推荐相对路径，Codex 会做安全校验。
+- git diff：提供文件模式、权限、重命名/复制检测、子模块、symlink 等丰富元信息。
+
+### 二进制与编码
+
+- apply_patch：面向 UTF‑8 文本；不支持 Git binary patch/二进制增量。
+- git diff：支持二进制补丁、行尾规范化、.gitattributes 等。
+
+### 安全与执行
+
+- apply_patch：与 Codex 安全流深度集成（解析预演 → 路径安全评估 → 沙箱/审批 → 受控执行 → 变更摘要/统一 diff）。
+- git diff：工具链本身不包含审批/沙箱，可结合 CI/Hook 实现治理。
+
+### 生态与可移植
+
+- apply_patch：专为 Codex 设计，需通过 Codex 的实现应用；适合代理/自动化回路内演进。应用后仍可用 Git 工作流提交/审阅。
+- git diff：行业通用，最适合跨团队/平台/工具传播与审阅。
+
+### 何时选用
+
+- 选 apply_patch：LLM 自动修复/重构、交互式代理、需要稳健定位和统一治理（审批/沙箱/可视化）的场景。
+- 选 git diff：对外交换补丁、走标准代码评审与 CI 流程、需要权限/模式/二进制/重命名检测等高级特性。
