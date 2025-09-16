@@ -224,6 +224,7 @@ jobs:
 
   update-branch:
     name: Update latest-alpha-cli branch
+    if: github.repository == 'openai/codex'
     permissions:
       contents: write
     needs: release
