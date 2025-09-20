@@ -1634,12 +1634,41 @@ impl ChatWidget {
         self.bottom_pane.set_composer_text(text);
     }
 
+    pub(crate) fn clear_composer_text(&mut self) {
+        self.bottom_pane.set_composer_text(String::new());
+    }
+
+    // !Modify: Backtrack picker params (searchable, localized hints)
+    pub(crate) fn open_backtrack_picker(&mut self, items: Vec<SelectionItem>) {
+        use crate::bottom_pane::SelectionViewParams;
+        let params = SelectionViewParams {
+            title: "Backtrack to User Messages".to_string(),
+            subtitle: Some(
+                "Only list user messages; selecting one will revert to that node (dropping subsequent context)"
+                    .to_string(),
+            ),
+            footer_hint: Some("↑/↓ 选择 · Enter 回退并编辑 · Esc 取消".to_string()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("输入关键字过滤".to_string()),
+        };
+        self.bottom_pane.show_selection_view(params);
+    }
+
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
         self.bottom_pane.show_esc_backtrack_hint();
     }
 
     pub(crate) fn clear_esc_backtrack_hint(&mut self) {
         self.bottom_pane.clear_esc_backtrack_hint();
+    }
+
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: std::time::Duration) {
+        self.bottom_pane.show_esc_clear_hint_for(dur);
+    }
+
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        self.bottom_pane.clear_esc_clear_hint();
     }
     /// Forward an `Op` directly to codex.
     pub(crate) fn submit_op(&self, op: Op) {
