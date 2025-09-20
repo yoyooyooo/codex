@@ -1414,18 +1414,56 @@ async fn submission_loop(
             }
             Op::ListCustomPrompts => {
                 let sub_id = sub.id.clone();
+                // !Modify: Merge project-level and global custom prompts
+                let mut seen = HashSet::new();
+                let mut merged: Vec<CustomPrompt> = Vec::new();
 
-                let custom_prompts: Vec<CustomPrompt> =
-                    if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
-                        crate::custom_prompts::discover_prompts_in(&dir).await
-                    } else {
-                        Vec::new()
-                    };
+                let mut global_prompts: Vec<CustomPrompt> = Vec::new();
+                if let Some(dir) = crate::custom_prompts::default_prompts_dir()
+                    .and_then(|dir| dir.is_dir().then_some(dir))
+                {
+                    global_prompts = crate::custom_prompts::discover_prompts_in(&dir).await;
+                    info!(
+                        "custom-prompts: global dir={}, count={}",
+                        dir.display(),
+                        global_prompts.len()
+                    );
+                }
+
+                let mut project_prompt_dirs: Vec<PathBuf> = Vec::new();
+                for ancestor in config.cwd.ancestors() {
+                    let candidate = ancestor.join(".codex").join("prompts");
+                    if candidate.is_dir() {
+                        project_prompt_dirs.push(candidate);
+                    }
+                }
+
+                for dir in &project_prompt_dirs {
+                    let prompts = crate::custom_prompts::discover_prompts_in(dir).await;
+                    info!(
+                        "custom-prompts: project dir={}, count={}",
+                        dir.display(),
+                        prompts.len()
+                    );
+                    for prompt in prompts {
+                        if seen.insert(prompt.name.clone()) {
+                            merged.push(prompt);
+                        }
+                    }
+                }
+
+                for prompt in global_prompts {
+                    if seen.insert(prompt.name.clone()) {
+                        merged.push(prompt);
+                    }
+                }
+
+                info!("custom-prompts: merged total count={}", merged.len());
 
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
-                        custom_prompts,
+                        custom_prompts: merged,
                     }),
                 };
                 sess.send_event(event).await;
