@@ -232,7 +232,7 @@ jobs:
   # npm docs: https://docs.npmjs.com/trusted-publishers
   publish-npm:
     # Skip this step for pre-releases (alpha/beta).
-    if: ${{ !contains(needs.release.outputs.version, '-') }}
+    # if: ${{ !contains(needs.release.outputs.version, '-') }}
     name: publish-npm
     needs: release
     runs-on: ubuntu-latest
@@ -246,7 +246,7 @@ jobs:
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-          scope: "@jojoyo"
+          scope: "@openai"
 
       # Trusted publishing requires npm CLI version 11.5.1 or later.
       - name: Update npm
@@ -270,6 +270,8 @@ jobs:
         run: npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${{ needs.release.outputs.version }}.tgz"
 
   update-branch:
+    # !Modify: Skip branch update on forks
+    if: ${{ github.repository == 'openai/codex' }}
     name: Update latest-alpha-cli branch
     permissions:
       contents: write
