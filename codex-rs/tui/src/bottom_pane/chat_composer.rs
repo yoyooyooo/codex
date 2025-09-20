@@ -73,6 +73,7 @@ pub(crate) struct ChatComposer {
     history: ChatComposerHistory,
     ctrl_c_quit_hint: bool,
     esc_backtrack_hint: bool,
+    esc_clear_hint_deadline: Option<Instant>,
     use_shift_enter_hint: bool,
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
@@ -118,6 +119,7 @@ impl ChatComposer {
             history: ChatComposerHistory::new(),
             ctrl_c_quit_hint: false,
             esc_backtrack_hint: false,
+            esc_clear_hint_deadline: None,
             use_shift_enter_hint,
             dismissed_file_popup_token: None,
             current_file_query: None,
@@ -137,23 +139,33 @@ impl ChatComposer {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         // Leave 1 column for the left border and 1 column for left padding
         self.textarea
             .desired_height(width.saturating_sub(LIVE_PREFIX_COLS))
             + match &self.active_popup {
-                ActivePopup::None => FOOTER_HEIGHT_WITH_HINT,
+                ActivePopup::None => FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 },
                 ActivePopup::Command(c) => c.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
             }
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         let popup_constraint = match &self.active_popup {
             ActivePopup::Command(popup) => {
                 Constraint::Max(popup.calculate_required_height(area.width))
             }
             ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::None => Constraint::Max(FOOTER_HEIGHT_WITH_HINT),
+            ActivePopup::None => {
+                Constraint::Max(FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 })
+            }
         };
         let [textarea_rect, _] =
             Layout::vertical([Constraint::Min(1), popup_constraint]).areas(area);
@@ -1226,6 +1238,10 @@ impl ChatComposer {
         self.is_task_running = running;
     }
 
+    pub(crate) fn set_esc_clear_hint_deadline(&mut self, until: Option<Instant>) {
+        self.esc_clear_hint_deadline = until;
+    }
+
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
         self.esc_backtrack_hint = show;
     }
@@ -1233,6 +1249,10 @@ impl ChatComposer {
 
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         let (popup_constraint, hint_spacing) = match &self.active_popup {
             ActivePopup::Command(popup) => (
                 Constraint::Max(popup.calculate_required_height(area.width)),
@@ -1240,7 +1260,7 @@ impl WidgetRef for ChatComposer {
             ),
             ActivePopup::File(popup) => (Constraint::Max(popup.calculate_required_height()), 0),
             ActivePopup::None => (
-                Constraint::Length(FOOTER_HEIGHT_WITH_HINT),
+                Constraint::Length(FOOTER_HEIGHT_WITH_HINT + if show_clear { 1 } else { 0 }),
                 FOOTER_SPACING_HEIGHT,
             ),
         };
@@ -1254,15 +1274,24 @@ impl WidgetRef for ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::None => {
-                let hint_rect = if hint_spacing > 0 {
-                    let [_, hint_rect] = Layout::vertical([
+                let hint_lines_total = FOOTER_HINT_HEIGHT + if show_clear { 1 } else { 0 };
+                let hint_area = if hint_spacing > 0 {
+                    let [_, hint_area] = Layout::vertical([
                         Constraint::Length(hint_spacing),
-                        Constraint::Length(FOOTER_HINT_HEIGHT),
+                        Constraint::Length(hint_lines_total),
                     ])
                     .areas(popup_rect);
-                    hint_rect
+                    hint_area
                 } else {
                     popup_rect
+                };
+                let (hint_rect, clear_rect) = if show_clear && hint_area.height >= 2 {
+                    let [primary, secondary] =
+                        Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+                            .areas(hint_area);
+                    (primary, Some(secondary))
+                } else {
+                    (hint_area, None)
                 };
                 let mut hint: Vec<Span<'static>> = if self.ctrl_c_quit_hint {
                     let ctrl_c_followup = if self.is_task_running {
@@ -1300,6 +1329,13 @@ impl WidgetRef for ChatComposer {
                     hint.push(" edit prev".into());
                 }
 
+                if show_clear && !self.ctrl_c_quit_hint {
+                    let weak = Style::default().fg(Color::DarkGray);
+                    hint.push("   ".into());
+                    hint.push(Span::from("Esc").style(weak));
+                    hint.push(Span::from(" clear").style(weak));
+                }
+
                 // Append token/context usage info to the footer hints when available.
                 if let Some(token_usage_info) = &self.token_usage_info {
                     let token_usage = &token_usage_info.total_token_usage;
@@ -1334,6 +1370,12 @@ impl WidgetRef for ChatComposer {
                 Line::from(hint)
                     .style(Style::default().dim())
                     .render_ref(hint_rect, buf);
+
+                if let Some(clear_rect) = clear_rect {
+                    Line::from(" Please Escape again to clear")
+                        .dim()
+                        .render_ref(clear_rect, buf);
+                }
             }
         }
         let border_style = if self.has_focus {

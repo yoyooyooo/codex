@@ -65,4 +65,6 @@ pub(crate) enum AppEvent {
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
+    /// Backtrack target: Nth last user message (N=1 is most recent).
+    BacktrackTo(usize),
 }
