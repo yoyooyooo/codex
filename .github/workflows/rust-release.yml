@@ -216,9 +216,8 @@ jobs:
           name: ${{ steps.release_name.outputs.name }}
           tag_name: ${{ github.ref_name }}
           files: dist/**
-          # Mark as prerelease only when the version has a suffix after x.y.z
-          # (e.g. -alpha, -beta). Otherwise publish a normal release.
-          prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
+          # // !Modify: Only mark alpha/beta builds as prereleases
+          prerelease: ${{ contains(steps.release_name.outputs.name, '-alpha') || contains(steps.release_name.outputs.name, '-beta') }}
 
       - uses: facebook/dotslash-publish-release@v2
         env:
@@ -267,10 +266,22 @@ jobs:
 
       # No NODE_AUTH_TOKEN needed because we use OIDC.
       - name: Publish to npm
-        run: npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${{ needs.release.outputs.version }}.tgz"
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION}"
+          publish_args=()
+          if [[ "$version" == *-* ]]; then
+            # // !Modify: Publish prereleases with explicit npm tag
+            suffix="${version#*-}"
+            tag="${suffix%%.*}"
+            publish_args+=(--tag "${tag:-prerelease}")
+          fi
+          npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${version}.tgz" "${publish_args[@]}"
 
   update-branch:
-    # !Modify: Skip branch update on forks
+    # // !Modify: Skip branch update on forks
     if: ${{ github.repository == 'openai/codex' }}
     name: Update latest-alpha-cli branch
     permissions:
