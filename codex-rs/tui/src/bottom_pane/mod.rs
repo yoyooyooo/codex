@@ -15,6 +15,7 @@ use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
 use std::time::Duration;
+use std::time::Instant;
 
 mod approval_modal_view;
 mod bottom_pane_view;
@@ -310,6 +311,18 @@ impl BottomPane {
             self.composer.set_esc_backtrack_hint(false);
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: Duration) {
+        self.composer
+            .set_esc_clear_hint_deadline(Some(Instant::now() + dur));
+        self.request_redraw();
+        self.request_redraw_in(dur);
+    }
+
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        self.composer.set_esc_clear_hint_deadline(None);
+        self.request_redraw();
     }
 
     // esc_backtrack_hint_visible removed; hints are controlled internally.

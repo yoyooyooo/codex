@@ -76,4 +76,7 @@ pub(crate) enum AppEvent {
 
     /// Open the custom prompt option from the review popup.
     OpenReviewCustomPrompt,
+
+    /// Backtrack target: Nth last user message (N=1 is most recent).
+    BacktrackTo(usize),
 }
