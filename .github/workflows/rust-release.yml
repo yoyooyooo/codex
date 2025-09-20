@@ -271,14 +271,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_VERSION}"
-          publish_args=()
-          if [[ "$version" == *-* ]]; then
-            # // !Modify: Publish prereleases with explicit npm tag
-            suffix="${version#*-}"
-            tag="${suffix%%.*}"
-            publish_args+=(--tag "${tag:-prerelease}")
-          fi
-          npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${version}.tgz" "${publish_args[@]}"
+          # // !Modify: Always publish with explicit npm tag
+          npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${version}.tgz" --tag latest
 
   update-branch:
     # // !Modify: Skip branch update on forks
