@@ -67,9 +67,28 @@ pub(crate) struct App {
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+    pub(crate) current_conversation_id: Option<ConversationId>,
 }
 
 impl App {
+    fn reset_transcript_state(&mut self) {
+        self.transcript_cells.clear();
+        self.deferred_history_lines.clear();
+        self.has_emitted_history_lines = false;
+        self.overlay = None;
+        self.backtrack = BacktrackState::default();
+        self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
+    }
+
+    fn sync_conversation_state(&mut self) {
+        let current = self.chat_widget.conversation_id();
+        if current != self.current_conversation_id {
+            self.reset_transcript_state();
+            self.current_conversation_id = current;
+        }
+    }
+
     pub async fn run(
         tui: &mut tui::Tui,
         auth_manager: Arc<AuthManager>,
@@ -145,7 +164,9 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            current_conversation_id: None,
         };
+        app.current_conversation_id = app.chat_widget.conversation_id();
 
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
@@ -223,9 +244,12 @@ impl App {
                     auth_manager: self.auth_manager.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
+                self.reset_transcript_state();
+                self.current_conversation_id = self.chat_widget.conversation_id();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::InsertHistoryCell(cell) => {
+                self.sync_conversation_state();
                 let cell: Arc<dyn HistoryCell> = cell.into();
                 if let Some(Overlay::Transcript(t)) = &mut self.overlay {
                     t.insert_cell(cell.clone());
@@ -278,6 +302,10 @@ impl App {
             }
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
+                self.current_conversation_id = self.chat_widget.conversation_id();
+            }
+            AppEvent::BacktrackTo(n) => {
+                self.confirm_backtrack_from_picker(n);
             }
             AppEvent::ExitRequest => {
                 return Ok(false);
@@ -389,9 +417,7 @@ impl App {
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             } => {
-                if self.chat_widget.is_normal_backtrack_mode()
-                    && self.chat_widget.composer_is_empty()
-                {
+                if self.chat_widget.is_normal_backtrack_mode() {
                     self.handle_backtrack_esc_key(tui);
                 } else {
                     self.chat_widget.handle_key_event(key_event);
@@ -416,7 +442,9 @@ impl App {
                 // Any non-Esc key press should cancel a primed backtrack.
                 // This avoids stale "Esc-primed" state after the user starts typing
                 // (even if they later backspace to empty).
-                if key_event.code != KeyCode::Esc && self.backtrack.primed {
+                if key_event.code != KeyCode::Esc
+                    && (self.backtrack.primed || self.backtrack.clear_primed_until.is_some())
+                {
                     self.reset_backtrack_state();
                 }
                 self.chat_widget.handle_key_event(key_event);
@@ -466,6 +494,7 @@ mod tests {
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            current_conversation_id: None,
         }
     }
 
