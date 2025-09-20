@@ -1,0 +1,6 @@
+---
+source: tui/src/modes/mode_bar.rs
+assertion_line: 934
+expression: last
+---
+■ E3102 EnumMismatch: choice=c (allowed: a|b)
