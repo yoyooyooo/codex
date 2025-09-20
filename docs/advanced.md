@@ -7,9 +7,9 @@ Run Codex head-less in pipelines. Example GitHub Action step:
 ```yaml
 - name: Update changelog via Codex
   run: |
-    npm install -g @openai/codex
-    codex login --api-key "${{ secrets.OPENAI_KEY }}"
-    codex exec --full-auto "update CHANGELOG for next release"
+    npm install -g @jojoyo/codex
+    export OPENAI_API_KEY="${{ secrets.OPENAI_KEY }}"
+    jcodex exec --full-auto "update CHANGELOG for next release"
 ```
 
 ### Resuming non-interactive sessions
@@ -107,14 +107,4 @@ Property   | Type   | Description
 
 ### Trying it Out
 > [!TIP]
-> Codex often takes a few minutes to run. To accommodate this, adjust the MCP inspector's Request and Total timeouts to 600000ms (10 minutes) under ⛭ Configuration.
-
-Use the MCP inspector and `codex mcp` to build a simple tic-tac-toe game with the following settings:
-
-**approval-policy:** never
-
-**prompt:** Implement a simple tic-tac-toe game with HTML, Javascript, and CSS. Write the game in a single file called index.html.
-
-**sandbox:** workspace-write
-
-Click "Run Tool" and you should see a list of events emitted from the Codex MCP server as it builds the game.
+> It is somewhat experimental, but the Codex CLI can also be run as an MCP _server_ via `codex mcp`. If you launch it with an MCP client such as `npx @modelcontextprotocol/inspector codex mcp` and send it a `tools/list` request, you will see that there is only one tool, `codex`, that accepts a grab-bag of inputs, including a catch-all `config` map for anything you might want to override. Feel free to play around with it and provide feedback via GitHub issues.

@@ -1,0 +1,6 @@
+---
+source: tui/src/modes/mode_bar.rs
+assertion_line: 1066
+expression: last
+---
+■ E3108 PathInvalid: path=\u0001bad

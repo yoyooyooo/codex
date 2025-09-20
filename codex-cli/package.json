@@ -1,9 +1,9 @@
 {
-  "name": "@openai/codex",
+  "name": "@jojoyo/codex",
   "version": "0.0.0-dev",
   "license": "Apache-2.0",
   "bin": {
-    "codex": "bin/codex.js"
+    "jcodex": "bin/codex.js"
   },
   "type": "module",
   "engines": {
@@ -11,11 +11,16 @@
   },
   "files": [
     "bin",
-    "vendor"
+    "vendor",
+    "dist",
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES.md",
+    "THIRD-PARTY-LICENSES.txt"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/yoyooyooo/codex.git",
     "directory": "codex-cli"
   }
 }
