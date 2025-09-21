@@ -41,6 +41,10 @@ pub(crate) enum AppEvent {
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
+    /// Show a read-only pager with the current <user_instructions> content
+    /// (including any <mode_instructions> that are currently applied).
+    ShowUserInstructions(String),
+
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     StartCommitAnimation,
@@ -77,6 +81,10 @@ pub(crate) enum AppEvent {
     /// Open the custom prompt option from the review popup.
     OpenReviewCustomPrompt,
 
+    /// Request opening the ModeBar (persistent mode summary/inline editor)
+    /// when appropriate (e.g., Down pressed at latest history entry).
+    OpenModeBar,
+    // RunOnUi 已移除；使用 ChatWidget 内部 UI 队列替代
     /// Backtrack target: Nth last user message (N=1 is most recent).
     BacktrackTo(usize),
 }

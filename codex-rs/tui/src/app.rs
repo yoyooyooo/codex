@@ -227,6 +227,8 @@ impl App {
                 }
             }
         }
+        // 执行待处理的 UI 任务，保证渲染更新及时
+        self.chat_widget.drain_ui_tasks();
         Ok(true)
     }
 
@@ -309,7 +311,22 @@ impl App {
             AppEvent::ExitRequest => {
                 return Ok(false);
             }
-            AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
+            AppEvent::CodexOp(op) => {
+                // 本地对齐：覆写 <user_instructions> 时，更新 ChatWidget.current_user_instructions
+                if let codex_core::protocol::Op::OverrideTurnContext {
+                    user_instructions, ..
+                } = &op
+                    && let Some(s) = user_instructions.clone()
+                {
+                    self.chat_widget.set_current_user_instructions(s);
+                }
+                self.chat_widget.submit_op(op)
+            }
+            AppEvent::OpenModeBar => {
+                if self.chat_widget.is_normal_backtrack_mode() {
+                    self.chat_widget.open_mode_bar();
+                }
+            }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();
@@ -323,6 +340,22 @@ impl App {
                 self.overlay = Some(Overlay::new_static_with_title(
                     pager_lines,
                     "D I F F".to_string(),
+                ));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::ShowUserInstructions(text) => {
+                // Show current <user_instructions> in a pager overlay
+                let _ = tui.enter_alt_screen();
+                let lines: Vec<ratatui::text::Line<'static>> = if text.trim().is_empty() {
+                    vec!["<user_instructions> is empty".italic().into()]
+                } else {
+                    text.lines()
+                        .map(|l| ratatui::text::Line::from(l.to_string()))
+                        .collect()
+                };
+                self.overlay = Some(Overlay::new_static_with_title(
+                    lines,
+                    "Current <user_instructions>".to_string(),
                 ));
                 tui.frame_requester().schedule_frame();
             }
@@ -392,6 +425,8 @@ impl App {
                 self.chat_widget.show_review_custom_prompt();
             }
         }
+        // 统一在每次事件处理后执行待处理 UI 任务
+        self.chat_widget.drain_ui_tasks();
         Ok(true)
     }
 

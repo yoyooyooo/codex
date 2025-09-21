@@ -18,6 +18,7 @@ members = [
     "ollama",
     "protocol",
     "protocol-ts",
+    "modes",
     "tui",
 ]
 resolver = "2"
@@ -46,6 +47,7 @@ codex-login = { path = "login" }
 codex-mcp-client = { path = "mcp-client" }
 codex-mcp-server = { path = "mcp-server" }
 codex-ollama = { path = "ollama" }
+codex-modes = { path = "modes" }
 codex-protocol = { path = "protocol" }
 codex-protocol-ts = { path = "protocol-ts" }
 codex-tui = { path = "tui" }
