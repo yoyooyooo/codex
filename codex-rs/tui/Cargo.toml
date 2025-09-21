@@ -39,6 +39,7 @@ codex-git-tooling = { workspace = true }
 codex-login = { workspace = true }
 codex-ollama = { workspace = true }
 codex-protocol = { workspace = true }
+codex-modes = { workspace = true }
 color-eyre = { workspace = true }
 crossterm = { workspace = true, features = [
     "bracketed-paste",
@@ -54,6 +55,7 @@ itertools = { workspace = true }
 lazy_static = { workspace = true }
 mcp-types = { workspace = true }
 path-clean = { workspace = true }
+pathdiff = { workspace = true }
 rand = { workspace = true }
 ratatui = { workspace = true, features = [
     "scrolling-regions",
@@ -84,7 +86,6 @@ pulldown-cmark = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
-pathdiff = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -93,7 +94,6 @@ libc = { workspace = true }
 # Only include it for non-Android targets so the crate builds on Android.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = { workspace = true }
-
 
 [dev-dependencies]
 chrono = { workspace = true, features = ["serde"] }

@@ -1,0 +1,10 @@
+---
+source: tui/src/modes/mode_panel.rs
+assertion_line: 438
+expression: "render_lines(&panel, 40, 5)"
+---
+▌ Modes                                 
+                                        
+> [x] review                            
+  [ ] qa                                
+Space 开 关   ⏎ 应 用   Esc 关 闭

@@ -1,0 +1,35 @@
+name: CI Guards
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master, develop, dev, trunk, "feat/**", "feature/**", "fork/**" ]
+
+jobs:
+  forbid-root-codex-samples:
+    name: Forbid root .codex samples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check for forbidden sample paths at repo root
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar dotglob nullglob
+          # Only guard at repository root: ./.codex/modes/** and ./.codex/prompts/**
+          violations=()
+          if compgen -G ".codex/modes/**" > /dev/null; then
+            while IFS= read -r -d '' f; do violations+=("$f"); done < <(printf '%s\0' .codex/modes/**)
+          fi
+          if compgen -G ".codex/prompts/**" > /dev/null; then
+            while IFS= read -r -d '' f; do violations+=("$f"); done < <(printf '%s\0' .codex/prompts/**)
+          fi
+          if [[ ${#violations[@]} -gt 0 ]]; then
+            echo "Found forbidden files under repo root (.codex/*):" >&2
+            for f in "${violations[@]}"; do echo " - $f" >&2; done
+            echo "Move examples into docs/ or tests/fixtures/ instead." >&2
+            exit 1
+          fi
+          echo "No forbidden root .codex samples detected."
+

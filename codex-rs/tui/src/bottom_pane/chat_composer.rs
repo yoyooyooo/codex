@@ -757,6 +757,10 @@ impl ChatComposer {
                         self.textarea.set_text(&text);
                         self.textarea.set_cursor(0);
                         return (InputResult::None, true);
+                    } else if matches!(key_event.code, KeyCode::Down) {
+                        // 在历史的最新一条，Down 无进一步可选，改为打开 ModeBar
+                        self.app_event_tx.send(AppEvent::OpenModeBar);
+                        return (InputResult::None, true);
                     }
                 }
                 self.handle_input_basic(key_event)
@@ -1289,6 +1293,8 @@ impl WidgetRef for ChatComposer {
                         " newline   ".into(),
                         key_hint::ctrl('T'),
                         " transcript   ".into(),
+                        key_hint::ctrl('U'),
+                        " user inst   ".into(),
                         key_hint::ctrl('C'),
                         " quit".into(),
                     ]
