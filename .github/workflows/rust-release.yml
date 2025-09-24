@@ -204,12 +204,16 @@ jobs:
           set -euo pipefail
           version="${VERSION}"
 
+          # // !Modify: Publish fork builds under latest tag
           if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
           elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
+          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
           else
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
@@ -286,11 +290,13 @@ jobs:
       - name: Publish to npm
         env:
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          NPM_TAG: ${{ needs.release.outputs.npm_tag }}
         run: |
           set -euo pipefail
           version="${RELEASE_VERSION}"
+          tag="${NPM_TAG}"
           # // !Modify: Always publish with explicit npm tag
-          npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${version}.tgz" --tag latest
+          npm publish "${GITHUB_WORKSPACE}/dist/npm/codex-npm-${version}.tgz" --tag "${tag}"
 
   update-branch:
     # // !Modify: Skip branch update on forks
