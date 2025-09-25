@@ -73,17 +73,52 @@ def main() -> int:
     if not workflow_url:
         workflow_url = DEFAULT_WORKFLOW_URL
 
-    workflow_id = workflow_url.rstrip("/").split("/")[-1]
+    # // !Modify: 支持 fork workflow URL 解析仓库与 run id
+    workflow_repo, workflow_id = _parse_workflow_repo_and_id(workflow_url)
 
     with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
         artifacts_dir = Path(artifacts_dir_str)
-        _download_artifacts(workflow_id, artifacts_dir)
+        _download_artifacts(workflow_repo, workflow_id, artifacts_dir)
         install_codex_binaries(artifacts_dir, vendor_dir, CODEX_TARGETS)
 
     fetch_rg(vendor_dir, DEFAULT_RG_TARGETS, manifest_path=RG_MANIFEST)
 
     print(f"Installed native dependencies into {vendor_dir}")
     return 0
+
+
+# // !Modify: 解析 workflow URL 以兼容 fork 仓库下载
+
+def _parse_workflow_repo_and_id(workflow_url: str) -> tuple[str, str]:
+    parsed = urlparse(workflow_url)
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+
+    workflow_id: str | None = None
+    repo: str | None = None
+
+    for idx, part in enumerate(path_parts):
+        if part == "runs" and idx + 1 < len(path_parts):
+            workflow_id = path_parts[idx + 1]
+            break
+
+    if workflow_id is None:
+        raise ValueError(f"Unable to derive workflow run id from URL: {workflow_url}")
+
+    hostname = parsed.netloc.lower()
+
+    if hostname == "api.github.com" and len(path_parts) >= 4 and path_parts[0] == "repos":
+        owner = path_parts[1]
+        repository = path_parts[2]
+        repo = f"{owner}/{repository}"
+    elif len(path_parts) >= 2:
+        owner = path_parts[0]
+        repository = path_parts[1]
+        repo = f"{owner}/{repository}"
+
+    if repo is None:
+        repo = "openai/codex"
+
+    return repo, workflow_id
 
 
 def fetch_rg(
@@ -144,7 +179,9 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+# // !Modify: 接收 repo 参数以支持 fork
+
+def _download_artifacts(repo: str, workflow_id: str, dest_dir: Path) -> None:
     cmd = [
         "gh",
         "run",
@@ -152,7 +189,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        repo,
         workflow_id,
     ]
     subprocess.check_call(cmd)
