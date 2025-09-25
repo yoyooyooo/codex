@@ -21,7 +21,8 @@ CODEX_CLI_ROOT=""
 # from the GitHub Action that created them. The calling workflow passes the
 # rust-release run URL via --workflow-url. Fallback shown below is only a
 # placeholder and not used in CI.
-WORKFLOW_URL="https://github.com/openai/codex/actions/runs/17417194663" # placeholder
+PLACEHOLDER_URL="https://github.com/openai/codex/actions/runs/17417194663"
+WORKFLOW_URL="$PLACEHOLDER_URL"
 REPO_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -49,6 +50,18 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "$WORKFLOW_URL" == "$PLACEHOLDER_URL" ]] && command -v gh >/dev/null 2>&1; then
+  # // !Modify: Auto-discover latest rust-release artifacts for forks
+  auto_url="$(gh run list --workflow rust-release -L1 --json url --jq '.[0].url // ""' || true)"
+  auto_url="${auto_url//$'\n'/}"
+  if [[ -n "$auto_url" ]]; then
+    WORKFLOW_URL="$auto_url"
+  else
+    echo "warning: unable to locate a rust-release workflow run; using placeholder" >&2
+    WORKFLOW_URL="$PLACEHOLDER_URL"
+  fi
+fi
 
 # ----------------------------------------------------------------------------
 # Determine where the binaries should be installed.
