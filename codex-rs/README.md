@@ -7,6 +7,13 @@ We provide Codex CLI as a standalone, native executable to ensure a zero-depende
 Today, the easiest way to install Codex is via `npm`:
 
 ```shell
+npm i -g @jojoyo/codex
+jcodex
+```
+
+Or, using upstream package/binary naming:
+
+```shell
 npm i -g @openai/codex
 codex
 ```

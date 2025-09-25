@@ -28,6 +28,7 @@ members = [
     "rmcp-client",
     "responses-api-proxy",
     "otel",
+    "modes",
     "tui",
     "git-apply",
     "utils/json-to-toml",
@@ -61,6 +62,7 @@ codex-linux-sandbox = { path = "linux-sandbox" }
 codex-login = { path = "login" }
 codex-mcp-client = { path = "mcp-client" }
 codex-mcp-server = { path = "mcp-server" }
+codex-modes = { path = "modes" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-process-hardening = { path = "process-hardening" }

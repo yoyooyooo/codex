@@ -94,6 +94,7 @@ pub(crate) struct ChatComposer {
     history: ChatComposerHistory,
     ctrl_c_quit_hint: bool,
     esc_backtrack_hint: bool,
+    esc_clear_hint_deadline: Option<Instant>,
     use_shift_enter_hint: bool,
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
@@ -139,6 +140,7 @@ impl ChatComposer {
             history: ChatComposerHistory::new(),
             ctrl_c_quit_hint: false,
             esc_backtrack_hint: false,
+            esc_clear_hint_deadline: None,
             use_shift_enter_hint,
             dismissed_file_popup_token: None,
             current_file_query: None,
@@ -166,11 +168,17 @@ impl ChatComposer {
             .unwrap_or_else(|| footer_height(footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
+
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
+        // Leave 1 column for the left border and 1 column for left padding
         self.textarea
             .desired_height(width.saturating_sub(LIVE_PREFIX_COLS))
             + 2
             + match &self.active_popup {
-                ActivePopup::None => footer_total_height,
+                ActivePopup::None => footer_total_height + if show_clear { 1 } else { 0 },
                 ActivePopup::Command(c) => c.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
             }
@@ -183,12 +191,19 @@ impl ChatComposer {
             .unwrap_or_else(|| footer_height(footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
+
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         let popup_constraint = match &self.active_popup {
             ActivePopup::Command(popup) => {
                 Constraint::Max(popup.calculate_required_height(area.width))
             }
             ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::None => Constraint::Max(footer_total_height),
+            ActivePopup::None => {
+                Constraint::Max(footer_total_height + if show_clear { 1 } else { 0 })
+            }
         };
         let mut area = area;
         if area.height > 1 {
@@ -886,6 +901,10 @@ impl ChatComposer {
                         self.textarea.set_text(&text);
                         self.textarea.set_cursor(0);
                         return (InputResult::None, true);
+                    } else if matches!(key_event.code, KeyCode::Down) {
+                        // 在历史的最新一条，Down 无进一步可选，改为打开 ModeBar
+                        self.app_event_tx.send(AppEvent::OpenModeBar);
+                        return (InputResult::None, true);
                     }
                 }
                 self.handle_input_basic(key_event)
@@ -1474,6 +1493,10 @@ impl ChatComposer {
         }
     }
 
+    pub(crate) fn set_esc_clear_hint_deadline(&mut self, until: Option<Instant>) {
+        self.esc_clear_hint_deadline = until;
+    }
+
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
         self.esc_backtrack_hint = show;
         if show {
@@ -1487,6 +1510,10 @@ impl ChatComposer {
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
+        let show_clear = self
+            .esc_clear_hint_deadline
+            .map(|dl| Instant::now() < dl)
+            .unwrap_or(false);
         match &self.active_popup {
             ActivePopup::Command(popup) => {
                 popup.render_ref(popup_rect, buf);
@@ -1510,6 +1537,7 @@ impl WidgetRef for ChatComposer {
                 } else {
                     popup_rect
                 };
+
                 if let Some(items) = self.footer_hint_override.as_ref() {
                     if !items.is_empty() {
                         let mut spans = Vec::with_capacity(items.len() * 4);
@@ -1530,6 +1558,22 @@ impl WidgetRef for ChatComposer {
                     }
                 } else {
                     render_footer(hint_rect, buf, footer_props);
+                }
+
+                // If showing the second-line clear hint, render it below the footer hints.
+                if show_clear && !self.ctrl_c_quit_hint {
+                    let clear_y = hint_rect.y.saturating_add(hint_rect.height);
+                    if clear_y < popup_rect.y.saturating_add(popup_rect.height) {
+                        let clear_rect = Rect {
+                            x: hint_rect.x,
+                            y: clear_y,
+                            width: hint_rect.width,
+                            height: 1,
+                        };
+                        Line::from(" Please Escape again to clear")
+                            .dim()
+                            .render_ref(clear_rect, buf);
+                    }
                 }
             }
         }

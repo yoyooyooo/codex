@@ -99,10 +99,7 @@ impl ApprovalOverlay {
                 exec_options(),
                 "Would you like to run the following command?".to_string(),
             ),
-            ApprovalVariant::ApplyPatch { .. } => (
-                patch_options(),
-                "Would you like to make the following edits?".to_string(),
-            ),
+            ApprovalVariant::ApplyPatch { .. } => (patch_options(), "Apply changes?".to_string()),
         };
 
         let header = Box::new(ColumnRenderable::new([

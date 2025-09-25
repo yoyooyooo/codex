@@ -130,6 +130,94 @@ where
     }
 }
 
+/// Backward‑compat shim used by some fork tests: delegate to `insert_history_lines` and
+/// ignore the explicit writer. Keeping this wrapper minimizes upstream diffs while
+/// allowing existing tests to compile.
+pub fn insert_history_lines_to_writer<B, W>(
+    terminal: &mut crate::custom_terminal::Terminal<B>,
+    writer: &mut W,
+    lines: Vec<Line>,
+) where
+    B: Backend + Write,
+    W: Write,
+{
+    use crate::wrapping::word_wrap_lines_borrowed;
+    use crossterm::cursor::MoveTo;
+    use crossterm::queue;
+    use crossterm::style::Colors;
+    use crossterm::style::Print;
+
+    use crossterm::style::SetColors;
+    use crossterm::terminal::Clear;
+
+    let screen_size = terminal.backend().size().unwrap_or(Size::new(0, 0));
+
+    let mut area = terminal.viewport_area;
+    let mut should_update_area = false;
+    let last_cursor_pos = terminal.last_known_cursor_pos;
+
+    // 预包裹：和 insert_history_lines 一致，确保终端滚动与 TUI 渲染一致
+    let wrapped = word_wrap_lines_borrowed(&lines, area.width.max(1) as usize);
+    let wrapped_lines = wrapped.len() as u16;
+    let cursor_top = if area.bottom() < screen_size.height {
+        // 将 [viewport.top..screen.bottom] 下移 wrapped_lines 行
+        let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
+        let top_1based = area.top() + 1;
+        let _ = queue!(writer, SetScrollRegion(top_1based..screen_size.height));
+        let _ = queue!(writer, MoveTo(0, area.top()));
+        for _ in 0..scroll_amount {
+            let _ = queue!(writer, Print("\x1bM"));
+        }
+        let _ = queue!(writer, ResetScrollRegion);
+
+        let cursor_top = area.top().saturating_sub(1);
+        area.y += scroll_amount;
+        should_update_area = true;
+        cursor_top
+    } else {
+        area.top().saturating_sub(1)
+    };
+
+    // 限定滚动区域为 [0..viewport.top)
+    let _ = queue!(writer, SetScrollRegion(1..area.top()));
+    let _ = queue!(writer, MoveTo(0, cursor_top));
+
+    for line in wrapped {
+        let _ = queue!(writer, Print("\r\n"));
+        let _ = queue!(
+            writer,
+            SetColors(Colors::new(
+                line.style
+                    .fg
+                    .map(std::convert::Into::into)
+                    .unwrap_or(crossterm::style::Color::Reset),
+                line.style
+                    .bg
+                    .map(std::convert::Into::into)
+                    .unwrap_or(crossterm::style::Color::Reset)
+            ))
+        );
+        let _ = queue!(writer, Clear(ClearType::UntilNewLine));
+        // 合并行样式到 spans
+        let merged_spans: Vec<Span> = line
+            .spans
+            .iter()
+            .map(|s| Span {
+                style: s.style.patch(line.style),
+                content: s.content.clone(),
+            })
+            .collect();
+        let _ = write_spans(writer, merged_spans.iter());
+    }
+
+    let _ = queue!(writer, ResetScrollRegion);
+    let _ = queue!(writer, MoveTo(last_cursor_pos.x, last_cursor_pos.y));
+
+    if should_update_area {
+        terminal.set_viewport_area(area);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetScrollRegion(pub std::ops::Range<u16>);
 

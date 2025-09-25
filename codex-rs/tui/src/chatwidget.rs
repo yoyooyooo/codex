@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,7 +40,6 @@ use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
-use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::ConversationId;
@@ -60,7 +60,6 @@ use tracing::debug;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
-use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
@@ -74,17 +73,22 @@ use crate::clipboard_paste::paste_image_to_temp_png;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
-use crate::exec_cell::new_active_exec_command;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
+use ratatui::text::Line;
+// Patch event rendering has been simplified; use history_cell helpers directly.
+use crate::exec_cell::new_active_exec_command;
 use crate::markdown::append_markdown;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
+use codex_protocol::plan_tool;
+// streaming internals are provided by crate::streaming and crate::markdown_stream
+use crate::bottom_pane::ApprovalRequest;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod agent;
@@ -92,9 +96,12 @@ use self::agent::spawn_agent;
 use self::agent::spawn_agent_from_existing;
 mod session_header;
 use self::session_header::SessionHeader;
+use crate::addons::AppLifecycleHook;
+use crate::addons::ModeUiContext;
+use crate::addons::UiViewFactory;
+use crate::addons::UiViewKind;
+use crate::modes::PersistentModeState;
 use crate::streaming::controller::StreamController;
-use std::path::Path;
-
 use chrono::Local;
 use codex_common::approval_presets::ApprovalPreset;
 use codex_common::approval_presets::builtin_approval_presets;
@@ -133,9 +140,7 @@ impl RateLimitWarningState {
     fn take_warnings(
         &mut self,
         secondary_used_percent: Option<f64>,
-        secondary_window_minutes: Option<u64>,
         primary_used_percent: Option<f64>,
-        primary_window_minutes: Option<u64>,
     ) -> Vec<String> {
         let reached_secondary_cap =
             matches!(secondary_used_percent, Some(percent) if percent == 100.0);
@@ -155,11 +160,8 @@ impl RateLimitWarningState {
                 self.secondary_index += 1;
             }
             if let Some(threshold) = highest_secondary {
-                let limit_label = secondary_window_minutes
-                    .map(get_limits_duration)
-                    .unwrap_or_else(|| "weekly".to_string());
                 warnings.push(format!(
-                    "Heads up, you've used over {threshold:.0}% of your {limit_label} limit. Run /status for a breakdown."
+                    "Heads up, you've used over {threshold:.0}% of your weekly limit. Run /status for a breakdown."
                 ));
             }
         }
@@ -173,36 +175,13 @@ impl RateLimitWarningState {
                 self.primary_index += 1;
             }
             if let Some(threshold) = highest_primary {
-                let limit_label = primary_window_minutes
-                    .map(get_limits_duration)
-                    .unwrap_or_else(|| "5h".to_string());
                 warnings.push(format!(
-                    "Heads up, you've used over {threshold:.0}% of your {limit_label} limit. Run /status for a breakdown."
+                    "Heads up, you've used over {threshold:.0}% of your 5h limit. Run /status for a breakdown."
                 ));
             }
         }
 
         warnings
-    }
-}
-
-pub(crate) fn get_limits_duration(windows_minutes: u64) -> String {
-    const MINUTES_PER_HOUR: u64 = 60;
-    const MINUTES_PER_DAY: u64 = 24 * MINUTES_PER_HOUR;
-    const MINUTES_PER_WEEK: u64 = 7 * MINUTES_PER_DAY;
-    const MINUTES_PER_MONTH: u64 = 30 * MINUTES_PER_DAY;
-    const ROUNDING_BIAS_MINUTES: u64 = 3;
-
-    if windows_minutes <= MINUTES_PER_DAY.saturating_add(ROUNDING_BIAS_MINUTES) {
-        let adjusted = windows_minutes.saturating_add(ROUNDING_BIAS_MINUTES);
-        let hours = std::cmp::max(1, adjusted / MINUTES_PER_HOUR);
-        format!("{hours}h")
-    } else if windows_minutes <= MINUTES_PER_WEEK.saturating_add(ROUNDING_BIAS_MINUTES) {
-        "weekly".to_string()
-    } else if windows_minutes <= MINUTES_PER_MONTH.saturating_add(ROUNDING_BIAS_MINUTES) {
-        "monthly".to_string()
-    } else {
-        "annual".to_string()
     }
 }
 
@@ -255,10 +234,23 @@ pub(crate) struct ChatWidget {
     // List of ghost commits corresponding to each turn.
     ghost_snapshots: Vec<GhostCommit>,
     ghost_snapshots_disabled: bool,
-    // Whether to add a final message separator after the last message
-    needs_final_message_separator: bool,
+    // Captured baseline <user_instructions> (without <mode_instructions>)
+    base_user_instructions: Option<String>,
+    // Current applied full <user_instructions> (for equivalence short‑circuit)
+    current_user_instructions: Option<String>,
+    // Cached persistent mode enablement state for reopening ModeBar/Panel.
+    persistent_mode_state: PersistentModeState,
+    // 是否为恢复已有会话（而非全新会话）
+    resumed_session: bool,
 
-    last_rendered_width: std::cell::Cell<Option<usize>>,
+    // 可选的生命周期钩子（最小插桩）。
+    lifecycle_hooks: Vec<Box<dyn AppLifecycleHook>>,
+    // 通用视图工厂（优先级高于 mode_ui_factories）。
+    ui_view_factories: Vec<Box<dyn UiViewFactory>>,
+
+    // 内部 UI 调度：跨线程将 UI 更新回投到主线程执行
+    ui_tasks_tx: std::sync::mpsc::Sender<Box<dyn Fn(&mut ChatWidget) + Send + 'static>>,
+    ui_tasks_rx: std::sync::mpsc::Receiver<Box<dyn Fn(&mut ChatWidget) + Send + 'static>>,
 }
 
 struct UserMessage {
@@ -283,6 +275,35 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
     }
 }
 
+fn extract_base_user_instructions(xml: &str) -> Option<String> {
+    let s = xml.trim();
+    let open = "<user_instructions>";
+    let close = "</user_instructions>";
+    let mut inner = if let (Some(a), Some(b)) = (s.find(open), s.rfind(close)) {
+        let start = a + open.len();
+        if b <= start {
+            return None;
+        }
+        s[start..b].to_string()
+    } else {
+        s.to_string()
+    };
+    // Strip <mode_instructions> block if present
+    let mi_open = "<mode_instructions>";
+    let mi_close = "</mode_instructions>";
+    if let (Some(a), Some(b)) = (inner.find(mi_open), inner.rfind(mi_close)) {
+        let end = b + mi_close.len();
+        // Remove the block, carefully handling surrounding newlines.
+        inner.replace_range(a..end, "");
+    }
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 impl ChatWidget {
     fn model_description_for(slug: &str) -> Option<&'static str> {
         if slug.starts_with("gpt-5-codex") {
@@ -293,7 +314,127 @@ impl ChatWidget {
             None
         }
     }
+    /// 从内部队列拉取并执行所有待处理的 UI 任务（在 UI 线程调用）。
+    pub(crate) fn drain_ui_tasks(&mut self) {
+        loop {
+            match self.ui_tasks_rx.try_recv() {
+                Ok(task) => task(self),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+    /// 注册一个生命周期钩子。
+    #[allow(dead_code)]
+    pub(crate) fn register_lifecycle_hook(&mut self, hook: Box<dyn AppLifecycleHook>) {
+        self.lifecycle_hooks.push(hook);
+    }
 
+    /// 注册一个用于构建 Mode UI 的工厂（自动适配为通用工厂）。
+    /// 注：内部统一路由到 `ui_view_factories`，不再单独维护 `mode_ui_factories`。
+    #[allow(dead_code)]
+    pub(crate) fn register_mode_ui_factory(
+        &mut self,
+        factory: Box<dyn crate::addons::ModeUiFactory>,
+    ) {
+        let adapter = crate::addons::ModeUiFactoryAdapter::new(factory);
+        self.ui_view_factories.push(Box::new(adapter));
+    }
+
+    /// 注册一个通用视图工厂。
+    pub(crate) fn register_ui_view_factory(&mut self, factory: Box<dyn UiViewFactory>) {
+        self.ui_view_factories.push(factory);
+    }
+
+    /// Compute a best-effort baseline <user_instructions> by combining
+    /// config.user_instructions with project-level AGENTS.md discovered from
+    /// the Git root to cwd. This mirrors core's project_doc discovery so that
+    /// TUI features (Ctrl+U, ModeBar/Panel rendering) include project docs
+    /// even when the initial <user_instructions> message was not replayed.
+    fn compose_fallback_user_instructions_with_project_doc(&self) -> String {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let mut combined = self.config.user_instructions.clone().unwrap_or_default();
+
+        // Discover project docs: walk up to git root, then collect AGENTS.md
+        // from root -> cwd (inclusive).
+        let mut dir = self.config.cwd.clone();
+        if let Ok(canon) = dir.canonicalize() {
+            dir = canon;
+        }
+
+        // Build chain upwards and detect git root.
+        let mut chain: Vec<PathBuf> = vec![dir.clone()];
+        let mut git_root: Option<PathBuf> = None;
+        let mut cursor = dir;
+        while let Some(parent) = cursor.parent() {
+            let git_marker = cursor.join(".git");
+            let git_exists = match fs::metadata(&git_marker) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => false,
+            };
+            if git_exists {
+                git_root = Some(cursor.clone());
+                break;
+            }
+            chain.push(parent.to_path_buf());
+            cursor = parent.to_path_buf();
+        }
+
+        let search_dirs: Vec<PathBuf> = if let Some(root) = git_root {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            let mut saw_root = false;
+            for p in chain.iter().rev() {
+                if !saw_root {
+                    if p == &root {
+                        saw_root = true;
+                    } else {
+                        continue;
+                    }
+                }
+                dirs.push(p.clone());
+            }
+            dirs
+        } else {
+            vec![self.config.cwd.clone()]
+        };
+
+        let mut project_parts: Vec<String> = Vec::new();
+        let mut remaining = self.config.project_doc_max_bytes as u64;
+        for d in search_dirs {
+            if remaining == 0 {
+                break;
+            }
+            let candidate = d.join("AGENTS.md");
+            match fs::symlink_metadata(&candidate) {
+                Ok(md) if md.is_file() || md.file_type().is_symlink() => {
+                    if let Ok(text) = fs::read_to_string(&candidate) {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            let bytes = text.as_bytes();
+                            let take = (remaining as usize).min(bytes.len());
+                            let slice = &bytes[..take];
+                            let s = String::from_utf8_lossy(slice).to_string();
+                            project_parts.push(s);
+                            remaining = remaining.saturating_sub(take as u64);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !project_parts.is_empty() {
+            if !combined.is_empty() {
+                combined.push_str("\n\n--- project-doc ---\n\n");
+            }
+            combined.push_str(&project_parts.join("\n\n"));
+        }
+
+        combined
+    }
     fn flush_answer_stream_with_separator(&mut self) {
         if let Some(mut controller) = self.stream_controller.take()
             && let Some(cell) = controller.finalize()
@@ -326,11 +467,83 @@ impl ChatWidget {
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
+
+        // Auto-apply default-enabled persistent modes at session start (silent)
+        // 仅在“非恢复会话”且当前不存在完整的 user_instructions 时执行。
+        if !self.resumed_session && self.current_user_instructions.is_none() {
+            // Only when we have a baseline <user_instructions> captured or a config fallback.
+            let base = self
+                .base_user_instructions
+                .clone()
+                .unwrap_or_else(|| self.compose_fallback_user_instructions_with_project_doc());
+            // Build enabled list without emitting history noise; apply only if any.
+            use codex_modes::EnabledMode;
+            use codex_modes::IndexMap as IMap;
+            use codex_modes::ModeKind;
+            use codex_modes::render_user_instructions;
+            use codex_modes::scan_modes;
+            if let Ok(defs) = scan_modes(&self.config.cwd, Some(&self.config.codex_home)) {
+                let mut enabled: Vec<EnabledMode> = Vec::new();
+                for def in &defs {
+                    if def.kind != ModeKind::Persistent || !def.default_enabled {
+                        continue;
+                    }
+                    let mut ok = true;
+                    let mut vars: IMap<&str, Option<String>> = IMap::new();
+                    for v in &def.variables {
+                        if v.required && v.default.is_none() {
+                            ok = false;
+                            break;
+                        }
+                        vars.insert(v.name.as_str(), None);
+                    }
+                    if ok {
+                        enabled.push(EnabledMode {
+                            id: &def.id,
+                            display_name: def.display_name.as_deref(),
+                            scope: &def.scope,
+                            variables: vars,
+                        });
+                    }
+                }
+                if !enabled.is_empty()
+                    && let Ok(rendered) = render_user_instructions(&base, &enabled, &defs)
+                {
+                    let mut state = PersistentModeState::default();
+                    for em in &enabled {
+                        let id = em.id.to_string();
+                        if state.enabled.insert(id.clone()) {
+                            state.enable_order.push(id);
+                        }
+                    }
+                    self.persistent_mode_state = state.clone();
+                    self.submit_op(Op::OverrideTurnContext {
+                        cwd: None,
+                        approval_policy: None,
+                        sandbox_policy: None,
+                        model: None,
+                        effort: None,
+                        summary: None,
+                        user_instructions: Some(rendered),
+                    });
+                    if let Ok(rendered_now) = render_user_instructions(&base, &enabled, &defs) {
+                        self.current_user_instructions = Some(rendered_now);
+                    }
+                    // Update persistent mode summary silently（直接更新 BottomPane）
+                    let labels = codex_modes::enabled_labels(&enabled);
+                    let summary = codex_modes::format_mode_summary(&labels);
+                    self.set_mode_summary(summary);
+                }
+            }
+        }
+
+        // 尾部调用扩展生命周期钩子（无扩展时无效果）。
+        for hook in self.lifecycle_hooks.iter_mut() {
+            hook.on_session_configured();
+        }
     }
 
     fn on_agent_message(&mut self, message: String) {
-        // If we have a stream_controller, then the final agent message is redundant and will be a
-        // duplicate of what has already been streamed.
         if self.stream_controller.is_none() {
             self.handle_streaming_delta(message);
         }
@@ -385,6 +598,7 @@ impl ChatWidget {
     fn on_task_started(&mut self) {
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.set_task_running(true);
+        self.stream_controller = None;
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
         self.request_redraw();
@@ -407,19 +621,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
-        if let Some(info) = info {
-            let context_window = info
-                .model_context_window
-                .or(self.config.model_context_window);
-            let percent = context_window.map(|window| {
-                info.last_token_usage
-                    .percent_of_context_window_remaining(window)
-            });
-            self.bottom_pane.set_context_window_percent(percent);
-            self.token_info = Some(info);
+        if info.is_some() {
+            self.bottom_pane.set_token_usage(info.clone());
+            self.token_info = info;
         }
     }
-
     fn on_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshot>) {
         if let Some(snapshot) = snapshot {
             let warnings = self.rate_limit_warnings.take_warnings(
@@ -427,15 +633,7 @@ impl ChatWidget {
                     .secondary
                     .as_ref()
                     .map(|window| window.used_percent),
-                snapshot
-                    .secondary
-                    .as_ref()
-                    .and_then(|window| window.window_minutes),
                 snapshot.primary.as_ref().map(|window| window.used_percent),
-                snapshot
-                    .primary
-                    .as_ref()
-                    .and_then(|window| window.window_minutes),
             );
 
             let display = crate::status::rate_limit_snapshot_display(&snapshot, Local::now());
@@ -485,20 +683,12 @@ impl ChatWidget {
 
         // If any messages were queued during the task, restore them into the composer.
         if !self.queued_user_messages.is_empty() {
-            let queued_text = self
+            let combined = self
                 .queued_user_messages
                 .iter()
                 .map(|m| m.text.clone())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let existing_text = self.bottom_pane.composer_text();
-            let combined = if existing_text.is_empty() {
-                queued_text
-            } else if queued_text.is_empty() {
-                existing_text
-            } else {
-                format!("{queued_text}\n{existing_text}")
-            };
             self.bottom_pane.set_composer_text(combined);
             // Clear the queue and update the status indicator list.
             self.queued_user_messages.clear();
@@ -508,7 +698,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_plan_update(&mut self, update: codex_core::plan_tool::UpdatePlanArgs) {
+    fn on_plan_update(&mut self, update: plan_tool::UpdatePlanArgs) {
         self.add_to_history(history_cell::new_plan_update(update));
     }
 
@@ -544,19 +734,17 @@ impl ChatWidget {
     }
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
-        self.add_to_history(history_cell::new_patch_event(
-            event.changes,
-            &self.config.cwd,
-        ));
-    }
-
-    fn on_view_image_tool_call(&mut self, event: ViewImageToolCallEvent) {
-        self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_view_image_tool_call(
-            event.path,
-            &self.config.cwd,
-        ));
-        self.request_redraw();
+        if event.auto_approved {
+            self.add_to_history(history_cell::new_patch_event(
+                event.changes,
+                &self.config.cwd,
+            ));
+        } else {
+            self.add_to_history(history_cell::new_change_approved_event(
+                event.changes,
+                &self.config.cwd,
+            ));
+        }
     }
 
     fn on_patch_apply_end(&mut self, event: codex_core::protocol::PatchApplyEndEvent) {
@@ -631,7 +819,7 @@ impl ChatWidget {
         if let Some(controller) = self.stream_controller.as_mut() {
             let (cell, is_idle) = controller.on_commit_tick();
             if let Some(cell) = cell {
-                self.bottom_pane.hide_status_indicator();
+                self.bottom_pane.set_task_running(false);
                 self.add_boxed_history(cell);
             }
             if is_idle {
@@ -664,7 +852,7 @@ impl ChatWidget {
 
     fn handle_stream_finished(&mut self) {
         if self.task_complete_pending {
-            self.bottom_pane.hide_status_indicator();
+            self.bottom_pane.set_task_running(false);
             self.task_complete_pending = false;
         }
         // A completed stream indicates non-exec content was just inserted.
@@ -677,18 +865,7 @@ impl ChatWidget {
         self.flush_active_cell();
 
         if self.stream_controller.is_none() {
-            if self.needs_final_message_separator {
-                let elapsed_seconds = self
-                    .bottom_pane
-                    .status_widget()
-                    .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds);
-                self.add_to_history(history_cell::FinalMessageSeparator::new(elapsed_seconds));
-                self.needs_final_message_separator = false;
-            }
-            self.stream_controller = Some(StreamController::new(
-                self.config.clone(),
-                self.last_rendered_width.get().map(|w| w.saturating_sub(2)),
-            ));
+            self.stream_controller = Some(StreamController::new(self.config.clone(), None));
         }
         if let Some(controller) = self.stream_controller.as_mut()
             && controller.push(&delta)
@@ -753,7 +930,9 @@ impl ChatWidget {
 
     pub(crate) fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
-        let command = shlex::try_join(ev.command.iter().map(String::as_str))
+        // Emit the proposed command into history (like proposed patches)
+        self.add_to_history(history_cell::new_proposed_command(&ev.command));
+        let command = shlex::try_join(ev.command.iter().map(std::string::String::as_str))
             .unwrap_or_else(|_| ev.command.join(" "));
         self.notify(Notification::ExecApprovalRequested { command });
 
@@ -772,12 +951,16 @@ impl ChatWidget {
         ev: ApplyPatchApprovalRequestEvent,
     ) {
         self.flush_answer_stream_with_separator();
+        self.add_to_history(history_cell::new_patch_event(
+            ev.changes.clone(),
+            &self.config.cwd,
+        ));
 
         let request = ApprovalRequest::ApplyPatch {
             id,
             reason: ev.reason,
-            changes: ev.changes.clone(),
             cwd: self.config.cwd.clone(),
+            changes: ev.changes.clone(),
         };
         self.bottom_pane.push_approval_request(request);
         self.request_redraw();
@@ -897,8 +1080,9 @@ impl ChatWidget {
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
+        let (ui_tasks_tx, ui_tasks_rx) = std::sync::mpsc::channel();
 
-        Self {
+        let mut s = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -935,9 +1119,18 @@ impl ChatWidget {
             is_review_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
-            needs_final_message_separator: false,
-            last_rendered_width: std::cell::Cell::new(None),
-        }
+            base_user_instructions: None,
+            current_user_instructions: None,
+            persistent_mode_state: PersistentModeState::default(),
+            resumed_session: false,
+            lifecycle_hooks: Vec::new(),
+            ui_view_factories: Vec::new(),
+            ui_tasks_tx,
+            ui_tasks_rx,
+        };
+        // 注册默认的 Modes 视图工厂，确保 Host 仅通过扩展创建模式 UI。
+        s.register_ui_view_factory(Box::new(crate::modes::ModesUiDefaultFactory::new()));
+        s
     }
 
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
@@ -960,8 +1153,9 @@ impl ChatWidget {
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
+        let (ui_tasks_tx, ui_tasks_rx) = std::sync::mpsc::channel();
 
-        Self {
+        let mut s = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -998,9 +1192,17 @@ impl ChatWidget {
             is_review_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
-            needs_final_message_separator: false,
-            last_rendered_width: std::cell::Cell::new(None),
-        }
+            base_user_instructions: None,
+            current_user_instructions: None,
+            persistent_mode_state: PersistentModeState::default(),
+            resumed_session: true,
+            lifecycle_hooks: Vec::new(),
+            ui_view_factories: Vec::new(),
+            ui_tasks_tx,
+            ui_tasks_rx,
+        };
+        s.register_ui_view_factory(Box::new(crate::modes::ModesUiDefaultFactory::new()));
+        s
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
@@ -1013,6 +1215,59 @@ impl ChatWidget {
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event {
+            // 保留上下方向键用于输入历史导航（原有行为）；不再用 Down 打开 ModeBar。
+            // Hotkey: apply modes override (Ctrl+P). Note: Ctrl+M is Enter in many terminals.
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            }
+            // Alternative hotkey: Alt+M.
+            | KeyEvent {
+                code: KeyCode::Char('m'),
+                modifiers: KeyModifiers::ALT,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                let base = self
+                    .base_user_instructions
+                    .clone()
+                    .unwrap_or_else(|| self.compose_fallback_user_instructions_with_project_doc());
+                if let Err(e) = self.apply_modes_override_from_disk(&base) {
+                    tracing::error!("apply modes override failed: {e:#}");
+                    self.add_to_history(history_cell::new_error_event(format!(
+                        "Failed to apply modes: {e}"
+                    )));
+                }
+                return;
+            }
+            // 打开模式面板（Alt+P）
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::ALT,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.open_modes_panel();
+                return;
+            }
+            // 查看当前 <user_instructions>（Ctrl+U）
+            KeyEvent {
+                code: KeyCode::Char('u'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                let text = self
+                    .current_user_instructions
+                    .clone()
+                    .or_else(|| self.base_user_instructions.clone())
+                    .unwrap_or_else(|| self.compose_fallback_user_instructions_with_project_doc());
+                self.app_event_tx
+                    .send(crate::app_event::AppEvent::ShowUserInstructions(text));
+                return;
+            }
             KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers: crossterm::event::KeyModifiers::CONTROL,
@@ -1040,6 +1295,17 @@ impl ChatWidget {
         }
 
         match key_event {
+            // Alt+B 打开模式条（ModeBar）进行就地编辑
+            KeyEvent {
+                code: KeyCode::Char('b'),
+                modifiers: KeyModifiers::ALT,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                if self.bottom_pane.is_normal_backtrack_mode() {
+                    self.open_mode_bar();
+                }
+            }
             KeyEvent {
                 code: KeyCode::Up,
                 modifiers: KeyModifiers::ALT,
@@ -1090,6 +1356,191 @@ impl ChatWidget {
         self.bottom_pane
             .attach_image(path, width, height, format_label);
         self.request_redraw();
+    }
+
+    /// Scan modes from disk and override <user_instructions> with a rendered block.
+    fn apply_modes_override_from_disk(&mut self, base: &str) -> anyhow::Result<()> {
+        use codex_modes::EnabledMode;
+        use codex_modes::IndexMap as IMap;
+        use codex_modes::ModeKind;
+        use codex_modes::render_user_instructions;
+        use codex_modes::scan_modes;
+        let defs = scan_modes(&self.config.cwd, Some(&self.config.codex_home))?;
+        if defs.is_empty() {
+            self.add_to_history(history_cell::new_error_event(
+                "No modes found under .codex/modes or $CODEX_HOME/modes".to_string(),
+            ));
+            return Ok(());
+        }
+        // Build enabled list: only persistent modes with all required vars having defaults.
+        let mut enabled: Vec<EnabledMode> = Vec::new();
+        for def in &defs {
+            if def.kind != ModeKind::Persistent {
+                continue;
+            }
+            if !def.default_enabled {
+                continue;
+            }
+            let mut ok = true;
+            let mut vars: IMap<&str, Option<String>> = IMap::new();
+            for v in &def.variables {
+                if v.required && v.default.is_none() {
+                    ok = false;
+                    break;
+                }
+                vars.insert(v.name.as_str(), None); // None => UseDefault
+            }
+            if ok {
+                enabled.push(EnabledMode {
+                    id: &def.id,
+                    display_name: def.display_name.as_deref(),
+                    scope: &def.scope,
+                    variables: vars,
+                });
+            }
+        }
+        if enabled.is_empty() {
+            self.add_to_history(history_cell::new_error_event(
+                "No default-enabled persistent modes with satisfiable defaults to apply"
+                    .to_string(),
+            ));
+            return Ok(());
+        }
+        let mut state = PersistentModeState::default();
+        for em in &enabled {
+            let id = em.id.to_string();
+            if state.enabled.insert(id.clone()) {
+                state.enable_order.push(id);
+            }
+        }
+        self.persistent_mode_state = state.clone();
+        let rendered = render_user_instructions(base, &enabled, &defs)?;
+        self.submit_op(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            model: None,
+            effort: None,
+            summary: None,
+            user_instructions: Some(rendered),
+        });
+        // Track current applied content for equivalence checks
+        let rendered_now = render_user_instructions(base, &enabled, &defs)?;
+        self.current_user_instructions = Some(rendered_now);
+        // 提示与摘要：改用库层统一文案
+        let labels = codex_modes::enabled_labels(&enabled);
+        let message = codex_modes::applied_message(enabled.len());
+        self.add_to_history(history_cell::new_info_event(
+            message,
+            if labels.is_empty() {
+                None
+            } else {
+                Some(labels.clone())
+            },
+        ));
+        let summary = codex_modes::format_mode_summary(&labels);
+        self.set_mode_summary(summary);
+        Ok(())
+    }
+
+    /// 打开模式面板（扫描与交互）。
+    fn open_modes_panel(&mut self) {
+        // 优先：通用工厂
+        if !self.ui_view_factories.is_empty() {
+            let base = self
+                .base_user_instructions
+                .clone()
+                .unwrap_or_else(|| self.compose_fallback_user_instructions_with_project_doc());
+            let ui_tx1 = self.ui_tasks_tx.clone();
+            let ui_tx2 = self.ui_tasks_tx.clone();
+            let ctx = ModeUiContext::new(
+                self.app_event_tx.clone(),
+                self.frame_requester.clone(),
+                self.config.cwd.clone(),
+                self.config.codex_home.clone(),
+                base,
+                self.current_user_instructions.clone(),
+                self.persistent_mode_state.clone(),
+                std::sync::Arc::new(move |labels: String| {
+                    let payload = labels;
+                    let _ = ui_tx1.send(Box::new(move |cw| {
+                        let t = payload.trim();
+                        if t.is_empty() {
+                            cw.set_mode_summary(None);
+                        } else {
+                            cw.set_mode_summary(Some(format!("Mode: {t}")));
+                        }
+                    }));
+                }),
+                std::sync::Arc::new(move |state: PersistentModeState| {
+                    let st = state;
+                    let _ = ui_tx2.send(Box::new(move |cw| {
+                        cw.set_persistent_mode_state(st.clone());
+                    }));
+                }),
+            );
+            for f in &self.ui_view_factories {
+                if let Some(view) = f.make_view(UiViewKind::ModePanel, &ctx) {
+                    self.bottom_pane.show_custom_view(view);
+                    self.request_redraw();
+                    return;
+                }
+            }
+        }
+        // 未提供任何工厂时给出提示信息，避免静默失败（理论上不会触发，默认工厂已注册）。
+        self.add_to_history(history_cell::new_error_event(
+            "No UI view factory registered (ModePanel)".to_string(),
+        ));
+    }
+
+    /// 打开底栏 ModeBar（摘要交互：左右选择、空格启用/禁用、Esc 退出）。
+    pub(crate) fn open_mode_bar(&mut self) {
+        // 优先：通用工厂
+        if !self.ui_view_factories.is_empty() {
+            let base = self
+                .base_user_instructions
+                .clone()
+                .unwrap_or_else(|| self.compose_fallback_user_instructions_with_project_doc());
+            let ui_tx1 = self.ui_tasks_tx.clone();
+            let ui_tx2 = self.ui_tasks_tx.clone();
+            let ctx = ModeUiContext::new(
+                self.app_event_tx.clone(),
+                self.frame_requester.clone(),
+                self.config.cwd.clone(),
+                self.config.codex_home.clone(),
+                base,
+                self.current_user_instructions.clone(),
+                self.persistent_mode_state.clone(),
+                std::sync::Arc::new(move |labels: String| {
+                    let payload = labels;
+                    let _ = ui_tx1.send(Box::new(move |cw| {
+                        let t = payload.trim();
+                        if t.is_empty() {
+                            cw.set_mode_summary(None);
+                        } else {
+                            cw.set_mode_summary(Some(format!("Mode: {t}")));
+                        }
+                    }));
+                }),
+                std::sync::Arc::new(move |state: PersistentModeState| {
+                    let st = state;
+                    let _ = ui_tx2.send(Box::new(move |cw| {
+                        cw.set_persistent_mode_state(st.clone());
+                    }));
+                }),
+            );
+            for f in &self.ui_view_factories {
+                if let Some(view) = f.make_view(UiViewKind::ModeBar, &ctx) {
+                    self.bottom_pane.show_custom_view(view);
+                    self.request_redraw();
+                    return;
+                }
+            }
+        }
+        // 未提供任何工厂时给出提示信息，避免静默失败（理论上不会触发，默认工厂已注册）。
+        self.add_to_history(history_cell::new_error_event(
+            "No UI view factory registered (ModeBar)".to_string(),
+        ));
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -1226,7 +1677,6 @@ impl ChatWidget {
 
     fn flush_active_cell(&mut self) {
         if let Some(active) = self.active_cell.take() {
-            self.needs_final_message_separator = true;
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
         }
     }
@@ -1239,7 +1689,6 @@ impl ChatWidget {
         if !cell.display_lines(u16::MAX).is_empty() {
             // Only break exec grouping if the cell renders visible lines.
             self.flush_active_cell();
-            self.needs_final_message_separator = true;
         }
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
@@ -1281,7 +1730,6 @@ impl ChatWidget {
         if !text.is_empty() {
             self.add_to_history(history_cell::new_user_prompt(text));
         }
-        self.needs_final_message_separator = false;
     }
 
     fn capture_ghost_snapshot(&mut self) {
@@ -1390,10 +1838,7 @@ impl ChatWidget {
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 self.on_task_complete(last_agent_message)
             }
-            EventMsg::TokenCount(ev) => {
-                self.set_token_info(ev.info);
-                self.on_rate_limit_snapshot(ev.rate_limits);
-            }
+            EventMsg::TokenCount(ev) => self.set_token_info(ev.info),
             EventMsg::Error(ErrorEvent { message }) => self.on_error(message),
             EventMsg::TurnAborted(ev) => match ev.reason {
                 TurnAbortReason::Interrupted => {
@@ -1419,7 +1864,6 @@ impl ChatWidget {
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.on_patch_apply_end(ev),
             EventMsg::ExecCommandEnd(ev) => self.on_exec_command_end(ev),
-            EventMsg::ViewImageToolCall(ev) => self.on_view_image_tool_call(ev),
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
@@ -1446,6 +1890,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
+            EventMsg::ViewImageToolCall(_ev) => {}
         }
     }
 
@@ -1502,7 +1947,12 @@ impl ChatWidget {
         match event.kind {
             Some(InputMessageKind::EnvironmentContext)
             | Some(InputMessageKind::UserInstructions) => {
-                // Skip XML‑wrapped context blocks in the transcript.
+                // Capture baseline <user_instructions> once, but do not render.
+                if matches!(event.kind, Some(InputMessageKind::UserInstructions))
+                    && self.base_user_instructions.is_none()
+                {
+                    self.base_user_instructions = extract_base_user_instructions(&event.message);
+                }
             }
             Some(InputMessageKind::Plain) | None => {
                 let message = event.message.trim();
@@ -1731,6 +2181,7 @@ impl ChatWidget {
                     model: Some(model_for_action.clone()),
                     effort: Some(effort_for_action),
                     summary: None,
+                    user_instructions: None,
                 }));
                 tx.send(AppEvent::UpdateModel(model_for_action.clone()));
                 tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
@@ -1787,6 +2238,7 @@ impl ChatWidget {
                     model: None,
                     effort: None,
                     summary: None,
+                    user_instructions: None,
                 }));
                 tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
                 tx.send(AppEvent::UpdateSandboxPolicy(sandbox.clone()));
@@ -1797,7 +2249,8 @@ impl ChatWidget {
                 is_current,
                 actions,
                 dismiss_on_select: true,
-                ..Default::default()
+                search_value: None,
+                display_shortcut: None,
             });
         }
 
@@ -1809,6 +2262,7 @@ impl ChatWidget {
         });
     }
 
+    // !Modify: Deduplicated config setter helpers after merge
     /// Set the approval policy in the widget's config copy.
     pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
         self.config.approval_policy = policy;
@@ -1888,12 +2342,42 @@ impl ChatWidget {
         self.bottom_pane.set_composer_text(text);
     }
 
+    pub(crate) fn clear_composer_text(&mut self) {
+        self.bottom_pane.set_composer_text(String::new());
+    }
+
+    // !Modify: Backtrack picker params (searchable, localized hints)
+    pub(crate) fn open_backtrack_picker(&mut self, items: Vec<SelectionItem>) {
+        use crate::bottom_pane::SelectionViewParams;
+        let params = SelectionViewParams {
+            title: Some("Backtrack to User Messages".to_string()),
+            subtitle: Some(
+                "Only list user messages; selecting one will revert to that node (dropping subsequent context)"
+                    .to_string(),
+            ),
+            footer_hint: Some(Line::from("↑/↓ 选择 · Enter 回退并编辑 · Esc 取消")),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("输入关键字过滤".to_string()),
+            header: Box::new(()),
+        };
+        self.bottom_pane.show_selection_view(params);
+    }
+
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
         self.bottom_pane.show_esc_backtrack_hint();
     }
 
     pub(crate) fn clear_esc_backtrack_hint(&mut self) {
         self.bottom_pane.clear_esc_backtrack_hint();
+    }
+
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: std::time::Duration) {
+        self.bottom_pane.show_esc_clear_hint_for(dur);
+    }
+
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        self.bottom_pane.clear_esc_clear_hint();
     }
     /// Forward an `Op` directly to codex.
     pub(crate) fn submit_op(&self, op: Op) {
@@ -1919,20 +2403,9 @@ impl ChatWidget {
         let mut items: Vec<SelectionItem> = Vec::new();
 
         items.push(SelectionItem {
-            name: "Review against a base branch".to_string(),
-            description: Some("(PR Style)".into()),
-            actions: vec![Box::new({
-                let cwd = self.config.cwd.clone();
-                move |tx| {
-                    tx.send(AppEvent::OpenReviewBranchPicker(cwd.clone()));
-                }
-            })],
-            dismiss_on_select: false,
-            ..Default::default()
-        });
-
-        items.push(SelectionItem {
             name: "Review uncommitted changes".to_string(),
+            description: None,
+            is_current: false,
             actions: vec![Box::new(
                 move |tx: &AppEventSender| {
                     tx.send(AppEvent::CodexOp(Op::Review {
@@ -1944,12 +2417,14 @@ impl ChatWidget {
                 },
             )],
             dismiss_on_select: true,
-            ..Default::default()
+            search_value: None,
+            display_shortcut: None,
         });
 
-        // New: Review a specific commit (opens commit picker)
         items.push(SelectionItem {
             name: "Review a commit".to_string(),
+            description: None,
+            is_current: false,
             actions: vec![Box::new({
                 let cwd = self.config.cwd.clone();
                 move |tx| {
@@ -1957,20 +2432,39 @@ impl ChatWidget {
                 }
             })],
             dismiss_on_select: false,
-            ..Default::default()
+            search_value: None,
+            display_shortcut: None,
+        });
+
+        items.push(SelectionItem {
+            name: "Review against a base branch".to_string(),
+            description: None,
+            is_current: false,
+            actions: vec![Box::new({
+                let cwd = self.config.cwd.clone();
+                move |tx| {
+                    tx.send(AppEvent::OpenReviewBranchPicker(cwd.clone()));
+                }
+            })],
+            dismiss_on_select: false,
+            search_value: None,
+            display_shortcut: None,
         });
 
         items.push(SelectionItem {
             name: "Custom review instructions".to_string(),
+            description: None,
+            is_current: false,
             actions: vec![Box::new(move |tx| {
                 tx.send(AppEvent::OpenReviewCustomPrompt);
             })],
             dismiss_on_select: false,
-            ..Default::default()
+            search_value: None,
+            display_shortcut: None,
         });
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Select a review preset".into()),
+            title: Some("Select a review preset".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -1988,6 +2482,8 @@ impl ChatWidget {
             let branch = option.clone();
             items.push(SelectionItem {
                 name: format!("{current_branch} -> {branch}"),
+                description: None,
+                is_current: false,
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
                     tx3.send(AppEvent::CodexOp(Op::Review {
                         review_request: ReviewRequest {
@@ -2000,7 +2496,7 @@ impl ChatWidget {
                 })],
                 dismiss_on_select: true,
                 search_value: Some(option),
-                ..Default::default()
+                display_shortcut: None,
             });
         }
 
@@ -2026,6 +2522,8 @@ impl ChatWidget {
 
             items.push(SelectionItem {
                 name: subject.clone(),
+                description: None,
+                is_current: false,
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
                     let hint = format!("commit {short}");
                     let prompt = format!(
@@ -2040,7 +2538,7 @@ impl ChatWidget {
                 })],
                 dismiss_on_select: true,
                 search_value: Some(search_val),
-                ..Default::default()
+                display_shortcut: None,
             });
         }
 
@@ -2086,11 +2584,27 @@ impl ChatWidget {
         self.submit_user_message(text.into());
     }
 
+    pub(crate) fn set_current_user_instructions(&mut self, s: String) {
+        self.current_user_instructions = Some(s);
+    }
+
+    pub(crate) fn persistent_mode_state(&self) -> PersistentModeState {
+        self.persistent_mode_state.clone()
+    }
+
+    pub(crate) fn set_persistent_mode_state(&mut self, state: PersistentModeState) {
+        self.persistent_mode_state = state;
+    }
+
     pub(crate) fn token_usage(&self) -> TokenUsage {
         self.token_info
             .as_ref()
             .map(|ti| ti.total_token_usage.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn set_mode_summary(&mut self, s: Option<String>) {
+        self.bottom_pane.set_mode_summary(s);
     }
 
     pub(crate) fn conversation_id(&self) -> Option<ConversationId> {
@@ -2105,12 +2619,57 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
+        self.bottom_pane.set_token_usage(None);
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         let [_, _, bottom_pane_area] = self.layout_areas(area);
         self.bottom_pane.cursor_pos(bottom_pane_area)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn show_review_commit_picker_with_entries(
+    widget: &mut ChatWidget,
+    entries: Vec<codex_core::git_info::CommitLogEntry>,
+) {
+    let mut items: Vec<SelectionItem> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let subject = entry.subject.clone();
+        let sha = entry.sha.clone();
+        let short = sha.chars().take(7).collect::<String>();
+        let search_val = format!("{subject} {sha}");
+
+        items.push(SelectionItem {
+            name: subject.clone(),
+            description: None,
+            is_current: false,
+            actions: vec![Box::new(move |tx3: &AppEventSender| {
+                let hint = format!("commit {short}");
+                let prompt = format!(
+                    "Review the code changes introduced by commit {sha} (\"{subject}\"). Provide prioritized, actionable findings."
+                );
+                tx3.send(AppEvent::CodexOp(Op::Review {
+                    review_request: ReviewRequest {
+                        prompt,
+                        user_facing_hint: hint,
+                    },
+                }));
+            })],
+            dismiss_on_select: true,
+            search_value: Some(search_val),
+            display_shortcut: None,
+        });
+    }
+
+    widget.bottom_pane.show_selection_view(SelectionViewParams {
+        title: Some("Select a commit to review".to_string()),
+        footer_hint: Some(standard_popup_hint_line()),
+        items,
+        is_searchable: true,
+        search_placeholder: Some("Type to search commits".to_string()),
+        ..Default::default()
+    });
 }
 
 impl WidgetRef for &ChatWidget {
@@ -2129,7 +2688,6 @@ impl WidgetRef for &ChatWidget {
                 tool.render_ref(area, buf);
             }
         }
-        self.last_rendered_width.set(Some(area.width as usize));
     }
 }
 
@@ -2234,48 +2792,6 @@ fn extract_first_bold(s: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-
-#[cfg(test)]
-pub(crate) fn show_review_commit_picker_with_entries(
-    chat: &mut ChatWidget,
-    entries: Vec<codex_core::git_info::CommitLogEntry>,
-) {
-    let mut items: Vec<SelectionItem> = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let subject = entry.subject.clone();
-        let sha = entry.sha.clone();
-        let short = sha.chars().take(7).collect::<String>();
-        let search_val = format!("{subject} {sha}");
-
-        items.push(SelectionItem {
-            name: subject.clone(),
-            actions: vec![Box::new(move |tx3: &AppEventSender| {
-                let hint = format!("commit {short}");
-                let prompt = format!(
-                    "Review the code changes introduced by commit {sha} (\"{subject}\"). Provide prioritized, actionable findings."
-                );
-                tx3.send(AppEvent::CodexOp(Op::Review {
-                    review_request: ReviewRequest {
-                        prompt,
-                        user_facing_hint: hint,
-                    },
-                }));
-            })],
-            dismiss_on_select: true,
-            search_value: Some(search_val),
-            ..Default::default()
-        });
-    }
-
-    chat.bottom_pane.show_selection_view(SelectionViewParams {
-        title: Some("Select a commit to review".to_string()),
-        footer_hint: Some(standard_popup_hint_line()),
-        items,
-        is_searchable: true,
-        search_placeholder: Some("Type to search commits".to_string()),
-        ..Default::default()
-    });
 }
 
 #[cfg(test)]

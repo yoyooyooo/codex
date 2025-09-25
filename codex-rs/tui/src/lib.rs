@@ -29,6 +29,7 @@ use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
+mod addons;
 mod app;
 mod app_backtrack;
 mod app_event;
@@ -54,6 +55,7 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
+mod modes;
 pub mod onboarding;
 mod pager_overlay;
 pub mod public_widgets;
