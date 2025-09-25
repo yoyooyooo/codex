@@ -2,7 +2,9 @@
 
 Save frequently used prompts as Markdown files and reuse them quickly from the slash menu.
 
-- Location: Put files in `$CODEX_HOME/prompts/` (defaults to `~/.codex/prompts/`).
+- Location:
+  - Global prompts live in `$CODEX_HOME/prompts/` (defaults to `~/.codex/prompts/`).
+  - Codex walks upward from the current working directory (including Git worktree directories) to find the nearest `.codex/prompts/` folders. Prompts in closer directories override global prompts with the same name, and the slash menu shows the merged list.
 - File type: Only Markdown files with the `.md` extension are recognized.
 - Name: The filename without the `.md` extension becomes the slash entry. For a file named `my-prompt.md`, type `/my-prompt`.
 - Content: The file contents are sent as your message when you select the item in the slash popup and press Enter.

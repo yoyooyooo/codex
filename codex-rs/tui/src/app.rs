@@ -66,9 +66,28 @@ pub(crate) struct App {
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+    pub(crate) current_conversation_id: Option<ConversationId>,
 }
 
 impl App {
+    fn reset_transcript_state(&mut self) {
+        self.transcript_cells.clear();
+        self.deferred_history_lines.clear();
+        self.has_emitted_history_lines = false;
+        self.overlay = None;
+        self.backtrack = BacktrackState::default();
+        self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
+    }
+
+    fn sync_conversation_state(&mut self) {
+        let current = self.chat_widget.conversation_id();
+        if current != self.current_conversation_id {
+            self.reset_transcript_state();
+            self.current_conversation_id = current;
+        }
+    }
+
     pub async fn run(
         tui: &mut tui::Tui,
         auth_manager: Arc<AuthManager>,
@@ -144,7 +163,9 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            current_conversation_id: None,
         };
+        app.current_conversation_id = app.chat_widget.conversation_id();
 
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
@@ -206,6 +227,8 @@ impl App {
                 }
             }
         }
+        // 执行待处理的 UI 任务，保证渲染更新及时
+        self.chat_widget.drain_ui_tasks();
         Ok(true)
     }
 
@@ -222,9 +245,12 @@ impl App {
                     auth_manager: self.auth_manager.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
+                self.reset_transcript_state();
+                self.current_conversation_id = self.chat_widget.conversation_id();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::InsertHistoryCell(cell) => {
+                self.sync_conversation_state();
                 let cell: Arc<dyn HistoryCell> = cell.into();
                 if let Some(Overlay::Transcript(t)) = &mut self.overlay {
                     t.insert_cell(cell.clone());
@@ -277,11 +303,30 @@ impl App {
             }
             AppEvent::ConversationHistory(ev) => {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
+                self.current_conversation_id = self.chat_widget.conversation_id();
+            }
+            AppEvent::BacktrackTo(n) => {
+                self.confirm_backtrack_from_picker(n);
             }
             AppEvent::ExitRequest => {
                 return Ok(false);
             }
-            AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
+            AppEvent::CodexOp(op) => {
+                // 本地对齐：覆写 <user_instructions> 时，更新 ChatWidget.current_user_instructions
+                if let codex_core::protocol::Op::OverrideTurnContext {
+                    user_instructions, ..
+                } = &op
+                    && let Some(s) = user_instructions.clone()
+                {
+                    self.chat_widget.set_current_user_instructions(s);
+                }
+                self.chat_widget.submit_op(op)
+            }
+            AppEvent::OpenModeBar => {
+                if self.chat_widget.is_normal_backtrack_mode() {
+                    self.chat_widget.open_mode_bar();
+                }
+            }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();
@@ -295,6 +340,22 @@ impl App {
                 self.overlay = Some(Overlay::new_static_with_title(
                     pager_lines,
                     "D I F F".to_string(),
+                ));
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::ShowUserInstructions(text) => {
+                // Show current <user_instructions> in a pager overlay
+                let _ = tui.enter_alt_screen();
+                let lines: Vec<ratatui::text::Line<'static>> = if text.trim().is_empty() {
+                    vec!["<user_instructions> is empty".italic().into()]
+                } else {
+                    text.lines()
+                        .map(|l| ratatui::text::Line::from(l.to_string()))
+                        .collect()
+                };
+                self.overlay = Some(Overlay::new_static_with_title(
+                    lines,
+                    "Current <user_instructions>".to_string(),
                 ));
                 tui.frame_requester().schedule_frame();
             }
@@ -364,6 +425,8 @@ impl App {
                 self.chat_widget.show_review_custom_prompt();
             }
         }
+        // 统一在每次事件处理后执行待处理 UI 任务
+        self.chat_widget.drain_ui_tasks();
         Ok(true)
     }
 
@@ -397,9 +460,7 @@ impl App {
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             } => {
-                if self.chat_widget.is_normal_backtrack_mode()
-                    && self.chat_widget.composer_is_empty()
-                {
+                if self.chat_widget.is_normal_backtrack_mode() {
                     self.handle_backtrack_esc_key(tui);
                 } else {
                     self.chat_widget.handle_key_event(key_event);
@@ -424,7 +485,9 @@ impl App {
                 // Any non-Esc key press should cancel a primed backtrack.
                 // This avoids stale "Esc-primed" state after the user starts typing
                 // (even if they later backspace to empty).
-                if key_event.code != KeyCode::Esc && self.backtrack.primed {
+                if key_event.code != KeyCode::Esc
+                    && (self.backtrack.primed || self.backtrack.clear_primed_until.is_some())
+                {
                     self.reset_backtrack_state();
                 }
                 self.chat_widget.handle_key_event(key_event);
@@ -483,6 +546,7 @@ mod tests {
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
+            current_conversation_id: None,
         }
     }
 

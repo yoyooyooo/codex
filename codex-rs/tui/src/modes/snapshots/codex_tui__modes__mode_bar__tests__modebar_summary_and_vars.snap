@@ -1,0 +1,9 @@
+---
+source: tui/src/modes/mode_bar.rs
+expression: "render_lines(&view, 64)"
+---
+────────────────────────────────────────────────────────────────
+Mode: [x] review · [ ] qa                                       
+[target=?]                                                      
+════════════════════════════════════════════════════════════════
+d Details  Tab Modes  ←→ Vars  ⏎ Edit  Space Toggle  Esc Exit

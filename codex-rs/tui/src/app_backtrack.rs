@@ -1,6 +1,8 @@
 use std::any::TypeId;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::app::App;
 use crate::history_cell::CompositeHistoryCell;
@@ -20,6 +22,8 @@ use crossterm::event::KeyEventKind;
 pub(crate) struct BacktrackState {
     /// True when Esc has primed backtrack mode in the main view.
     pub(crate) primed: bool,
+    /// If Some, indicates that within this deadline a second Esc should clear the composer.
+    pub(crate) clear_primed_until: Option<Instant>,
     /// Session id of the base conversation to fork from.
     pub(crate) base_id: Option<ConversationId>,
     /// Index in the transcript of the last user message.
@@ -82,15 +86,30 @@ impl App {
 
     /// Handle global Esc presses for backtracking when no overlay is present.
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
-        // Only handle backtracking when composer is empty to avoid clobbering edits.
-        if self.chat_widget.composer_is_empty() {
+        if self.overlay.is_none() {
+            if !self.chat_widget.composer_is_empty() {
+                let now = Instant::now();
+                if let Some(deadline) = self.backtrack.clear_primed_until
+                    && now <= deadline
+                {
+                    self.chat_widget.clear_composer_text();
+                    self.chat_widget.clear_esc_clear_hint();
+                    self.backtrack.clear_primed_until = None;
+                    return;
+                }
+                self.backtrack.clear_primed_until = Some(now + Duration::from_secs(1));
+                self.chat_widget
+                    .show_esc_clear_hint_for(Duration::from_secs(1));
+                return;
+            }
+
             if !self.backtrack.primed {
                 self.prime_backtrack();
-            } else if self.overlay.is_none() {
-                self.open_backtrack_preview(tui);
-            } else if self.backtrack.overlay_preview_active {
-                self.step_backtrack_and_highlight(tui);
+            } else {
+                self.open_user_nodes_picker();
             }
+        } else if self.backtrack.overlay_preview_active {
+            self.step_backtrack_and_highlight(tui);
         }
     }
 
@@ -108,6 +127,7 @@ impl App {
     }
 
     /// Open transcript overlay (enters alternate screen and shows full transcript).
+    #[allow(dead_code)]
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.enter_alt_screen();
         self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
@@ -145,15 +165,22 @@ impl App {
         self.backtrack.primed = true;
         self.backtrack.nth_user_message = usize::MAX;
         self.backtrack.base_id = self.chat_widget.conversation_id();
-        self.chat_widget.show_esc_backtrack_hint();
+        self.backtrack.clear_primed_until = None;
+        self.chat_widget.clear_esc_clear_hint();
+        if self.chat_widget.composer_is_empty() {
+            self.chat_widget.show_esc_backtrack_hint();
+        }
     }
 
     /// Open overlay and begin backtrack preview flow (first step + highlight).
+    #[allow(dead_code)]
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         self.open_transcript_overlay(tui);
         self.backtrack.overlay_preview_active = true;
         // Composer is hidden by overlay; clear its hint.
         self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
+        self.backtrack.clear_primed_until = None;
         self.step_backtrack_and_highlight(tui);
     }
 
@@ -162,6 +189,9 @@ impl App {
         self.backtrack.primed = true;
         self.backtrack.base_id = self.chat_widget.conversation_id();
         self.backtrack.overlay_preview_active = true;
+        // !Modify: Reset Esc clear hint when entering overlay preview
+        self.backtrack.clear_primed_until = None;
+        self.chat_widget.clear_esc_clear_hint();
         let count = user_count(&self.transcript_cells);
         if let Some(last) = count.checked_sub(1) {
             self.apply_backtrack_selection(last);
@@ -259,13 +289,97 @@ impl App {
         self.reset_backtrack_state();
     }
 
+    // !Modify: Backtrack user-node picker (items + actions)
+    pub(crate) fn open_user_nodes_picker(&mut self) {
+        use crate::bottom_pane::SelectionAction;
+        use crate::bottom_pane::SelectionItem;
+
+        self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
+        self.backtrack.clear_primed_until = None;
+
+        let user_cells: Vec<&UserHistoryCell> = self
+            .transcript_cells
+            .iter()
+            .filter_map(|cell| cell.as_any().downcast_ref::<UserHistoryCell>())
+            .collect();
+
+        if user_cells.is_empty() {
+            self.reset_backtrack_state();
+            return;
+        }
+
+        let total = user_cells.len();
+        let mut items = Vec::with_capacity(total);
+        for (idx, cell) in user_cells.iter().enumerate().rev() {
+            let display_n = total - idx;
+            let first_line = cell.message.lines().next().unwrap_or("").trim().to_string();
+            let name = if first_line.is_empty() {
+                format!("(空消息) [{display_n}]")
+            } else {
+                first_line
+            };
+            let description = if display_n == 1 {
+                Some("最近".to_string())
+            } else {
+                Some(format!("{display_n} 条之前"))
+            };
+            let drop_count = display_n;
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(crate::app_event::AppEvent::BacktrackTo(drop_count));
+            })];
+
+            items.push(SelectionItem {
+                name,
+                description,
+                is_current: display_n == 1,
+                actions,
+                dismiss_on_select: true,
+                search_value: Some(cell.message.clone()),
+            });
+        }
+
+        self.chat_widget.open_backtrack_picker(items);
+    }
+
+    pub(crate) fn confirm_backtrack_from_picker(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let Some(base_id) = self.chat_widget.conversation_id() else {
+            return;
+        };
+        let user_cells: Vec<&UserHistoryCell> = self
+            .transcript_cells
+            .iter()
+            .filter_map(|cell| cell.as_any().downcast_ref::<UserHistoryCell>())
+            .collect();
+        if user_cells.is_empty() {
+            self.reset_backtrack_state();
+            return;
+        }
+        if n > user_cells.len() {
+            self.reset_backtrack_state();
+            return;
+        }
+        let idx = user_cells.len() - n;
+        let prefill = user_cells
+            .get(idx)
+            .map(|cell| cell.message.clone())
+            .unwrap_or_default();
+        self.request_backtrack(prefill, base_id, idx);
+        self.reset_backtrack_state();
+    }
+
     /// Clear all backtrack-related state and composer hints.
     pub(crate) fn reset_backtrack_state(&mut self) {
         self.backtrack.primed = false;
+        self.backtrack.clear_primed_until = None;
         self.backtrack.base_id = None;
         self.backtrack.nth_user_message = usize::MAX;
         // In case a hint is somehow still visible (e.g., race with overlay open/close).
         self.chat_widget.clear_esc_backtrack_hint();
+        self.chat_widget.clear_esc_clear_hint();
     }
 
     /// Handle a ConversationHistory response while a backtrack is pending.
@@ -346,6 +460,7 @@ impl App {
         if !prefill.is_empty() {
             self.chat_widget.set_composer_text(prefill.to_string());
         }
+        self.current_conversation_id = self.chat_widget.conversation_id();
         tui.frame_requester().schedule_frame();
     }
 

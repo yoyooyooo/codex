@@ -1,0 +1,6 @@
+---
+source: tui/src/modes/mode_bar.rs
+assertion_line: 1022
+expression: last
+---
+■ E3107 NumberInvalid: num=abc

@@ -125,6 +125,12 @@ pub enum Op {
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
         summary: Option<ReasoningSummaryConfig>,
+
+        /// Override the full `<user_instructions>` payload for this session.
+        /// When set, the server replaces the first `<user_instructions>` message
+        /// in the conversation history without triggering a model turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_instructions: Option<String>,
     },
 
     /// Approve a command execution

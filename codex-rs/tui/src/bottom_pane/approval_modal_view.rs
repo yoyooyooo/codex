@@ -92,7 +92,6 @@ mod tests {
         let first = make_exec_request();
         let mut view = ApprovalModalView::new(first, tx);
         view.enqueue_request(make_exec_request());
-
         let (tx2, _rx2) = unbounded_channel::<AppEvent>();
         // Why do we have this?
         let _pane = BottomPane::new(super::super::BottomPaneParams {
@@ -103,6 +102,7 @@ mod tests {
             placeholder_text: "Ask Codex to do anything".to_string(),
             disable_paste_burst: false,
         });
+
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c());
         assert!(view.queue.is_empty());
         assert!(view.current.is_complete());

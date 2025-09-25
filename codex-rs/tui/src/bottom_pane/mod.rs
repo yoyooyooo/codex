@@ -1,10 +1,11 @@
 //! Bottom pane: shows the ChatComposer or a BottomPaneView, if one is active.
 use std::path::PathBuf;
 
+use crate::addons::BottomPaneAddon;
 use crate::app_event_sender::AppEventSender;
 use crate::tui::FrameRequester;
 use crate::user_approval_widget::ApprovalRequest;
-use bottom_pane_view::BottomPaneView;
+pub(crate) use bottom_pane_view::BottomPaneView;
 use codex_core::protocol::TokenUsageInfo;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyCode;
@@ -13,8 +14,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use std::time::Duration;
+use std::time::Instant;
 
 mod approval_modal_view;
 mod bottom_pane_view;
@@ -67,6 +70,12 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Queued user messages to show under the status indicator.
     queued_user_messages: Vec<String>,
+
+    /// Persistent mode summary text rendered under the composer.
+    mode_summary: Option<String>,
+
+    /// Addons mounted into BottomPane for optional behaviors/rendering.
+    addons: Vec<Box<dyn BottomPaneAddon>>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -99,7 +108,16 @@ impl BottomPane {
             status: None,
             queued_user_messages: Vec::new(),
             esc_backtrack_hint: false,
+            mode_summary: None,
+            addons: Vec::new(),
         }
+    }
+
+    /// 挂载一个 BottomPane 扩展（最小插桩，默认不改变宿主行为）。
+    /// 说明：当前默认路径未直接调用，作为扩展位保留。
+    #[allow(dead_code)]
+    pub(crate) fn register_addon(&mut self, addon: Box<dyn BottomPaneAddon>) {
+        self.addons.push(addon);
     }
 
     fn active_view(&self) -> Option<&dyn BottomPaneView> {
@@ -111,12 +129,17 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_mode_summary(&mut self, summary: Option<String>) {
+        self.mode_summary = summary;
+        self.request_redraw();
+    }
+
     pub fn desired_height(&self, width: u16) -> u16 {
         // Always reserve one blank row above the pane for visual spacing.
         let top_margin = 1;
 
         // Base height depends on whether a modal/overlay is active.
-        let base = match self.active_view().as_ref() {
+        let mut base = match self.active_view().as_ref() {
             Some(view) => view.desired_height(width),
             None => self.composer.desired_height(width).saturating_add(
                 self.status
@@ -124,8 +147,16 @@ impl BottomPane {
                     .map_or(0, |status| status.desired_height(width)),
             ),
         };
-        // Account for bottom padding rows. Top spacing is handled in layout().
+        // Addons 可以追加高度需求（最小化差异：无扩展时为 0）。
+        for a in &self.addons {
+            base = base.saturating_add(a.desired_height_additional(width));
+        }
+        // Account for bottom padding rows as well as the optional mode summary rows.
+        // Reserve 2 lines when a summary is present: a separator and the summary text itself.
+        // Top spacing is handled in layout().
+        let summary_lines: u16 = if self.mode_summary.is_some() { 2 } else { 0 };
         base.saturating_add(Self::BOTTOM_PAD_LINES)
+            .saturating_add(summary_lines)
             .saturating_add(top_margin)
     }
 
@@ -170,6 +201,12 @@ impl BottomPane {
 
     /// Forward a key event to the active view or the composer.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> InputResult {
+        // 让扩展优先尝试消费按键（不改变宿主默认行为）。
+        for a in self.addons.iter_mut() {
+            if let Some(result) = a.handle_key_event(key_event) {
+                return result;
+            }
+        }
         // If a modal/view is active, handle it here; otherwise forward to composer.
         if let Some(view) = self.view_stack.last_mut() {
             if key_event.code == KeyCode::Esc
@@ -312,6 +349,18 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn show_esc_clear_hint_for(&mut self, dur: Duration) {
+        self.composer
+            .set_esc_clear_hint_deadline(Some(Instant::now() + dur));
+        self.request_redraw();
+        self.request_redraw_in(dur);
+    }
+
+    pub(crate) fn clear_esc_clear_hint(&mut self) {
+        self.composer.set_esc_clear_hint_deadline(None);
+        self.request_redraw();
+    }
+
     // esc_backtrack_hint_visible removed; hints are controlled internally.
 
     pub fn set_task_running(&mut self, running: bool) {
@@ -379,6 +428,11 @@ impl BottomPane {
     }
 
     pub(crate) fn show_view(&mut self, view: Box<dyn BottomPaneView>) {
+        self.push_view(view);
+    }
+
+    /// Display a custom bottom pane view (e.g. mode bar/panel).
+    pub(crate) fn show_custom_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.push_view(view);
     }
 
@@ -494,8 +548,62 @@ impl WidgetRef for &BottomPane {
                 status.render_ref(status_area, buf);
             }
 
-            // Render the composer in the remaining area.
-            self.composer.render_ref(content, buf);
+            let summary_lines: u16 = if self.mode_summary.is_some() { 2 } else { 0 };
+            let composer_height = content
+                .height
+                .saturating_sub(summary_lines.min(content.height));
+            let composer_area = Rect {
+                x: content.x,
+                y: content.y,
+                width: content.width,
+                height: composer_height,
+            };
+
+            if composer_area.height > 0 {
+                self.composer.render_ref(composer_area, buf);
+            }
+
+            if let Some(text) = &self.mode_summary
+                && summary_lines > 0
+                && content.height >= 1
+            {
+                use ratatui::style::Stylize;
+                use ratatui::text::Line;
+                use ratatui::text::Span as RtSpan;
+                use ratatui::widgets::Paragraph;
+
+                let summary_y = content.y + composer_area.height;
+                if summary_lines >= 2
+                    && content.height >= 2
+                    && summary_y < content.y + content.height
+                {
+                    let sep_area = Rect {
+                        x: content.x,
+                        y: summary_y,
+                        width: content.width,
+                        height: 1,
+                    };
+                    let sep_text = "─".repeat(sep_area.width as usize);
+                    Paragraph::new(Line::from(vec![RtSpan::from(sep_text).dim()]))
+                        .render(sep_area, buf);
+                }
+
+                let text_row_y = content.y.saturating_add(content.height.saturating_sub(1));
+                if text_row_y < content.y + content.height {
+                    let summary_area = Rect {
+                        x: content.x,
+                        y: text_row_y,
+                        width: content.width,
+                        height: 1,
+                    };
+                    Paragraph::new(Line::from(text.clone().dim())).render(summary_area, buf);
+                }
+            }
+        }
+
+        // 允许扩展在整个区域上追加渲染（最小插桩，默认无效果）。
+        for a in &self.addons {
+            a.render_after(area, buf);
         }
     }
 }
@@ -564,6 +672,92 @@ mod tests {
         assert!(
             !r0.contains("Working"),
             "overlay should not render above modal"
+        );
+    }
+
+    #[test]
+    fn mode_summary_shows_and_hides() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+        });
+
+        // 尺寸足够容纳摘要与分隔线
+        let area = Rect::new(0, 0, 40, 6);
+
+        // 初始：无摘要
+        let mut buf = Buffer::empty(area);
+        (&pane).render_ref(area, &mut buf);
+        let mut last = String::new();
+        for x in 0..area.width {
+            last.push(
+                buf[(x, area.height - 1)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' '),
+            );
+        }
+        assert!(
+            last.trim().is_empty(),
+            "expected no summary initially: {last:?}"
+        );
+
+        // 设置摘要：应出现分隔线+文本
+        pane.set_mode_summary(Some("Mode: qa".to_string()));
+        let mut buf = Buffer::empty(area);
+        (&pane).render_ref(area, &mut buf);
+        // 在整个区域中查找摘要文本和分隔线
+        let mut blob = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let s = buf[(x, y)].symbol();
+                if s.is_empty() {
+                    blob.push(' ');
+                } else {
+                    blob.push_str(s);
+                }
+            }
+            blob.push('\n');
+        }
+        assert!(
+            blob.contains("Mode: qa"),
+            "expected summary text in buffer: {blob}"
+        );
+        assert!(
+            blob.contains('─'),
+            "expected separator line present in buffer: {blob}"
+        );
+
+        // 清空摘要：应隐藏文本与分隔线
+        pane.set_mode_summary(None);
+        let mut buf = Buffer::empty(area);
+        (&pane).render_ref(area, &mut buf);
+        let mut blob2 = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let s = buf[(x, y)].symbol();
+                if s.is_empty() {
+                    blob2.push(' ');
+                } else {
+                    blob2.push_str(s);
+                }
+            }
+            blob2.push('\n');
+        }
+        assert!(
+            !blob2.contains("Mode:"),
+            "expected no summary text after hiding: {blob2}"
+        );
+        assert!(
+            !blob2.contains('─'),
+            "expected no separator after hiding: {blob2}"
         );
     }
 

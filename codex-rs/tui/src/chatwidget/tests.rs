@@ -310,6 +310,7 @@ fn make_chatwidget_manual() -> (
         disable_paste_burst: false,
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
+    let (ui_tasks_tx, ui_tasks_rx) = std::sync::mpsc::channel();
     let widget = ChatWidget {
         app_event_tx,
         codex_op_tx: op_tx,
@@ -337,6 +338,14 @@ fn make_chatwidget_manual() -> (
         is_review_mode: false,
         ghost_snapshots: Vec::new(),
         ghost_snapshots_disabled: false,
+        base_user_instructions: None,
+        current_user_instructions: None,
+        persistent_mode_state: crate::modes::PersistentModeState::default(),
+        resumed_session: false,
+        lifecycle_hooks: Vec::new(),
+        ui_view_factories: Vec::new(),
+        ui_tasks_tx,
+        ui_tasks_rx,
     };
     (widget, rx, op_rx)
 }
@@ -410,7 +419,6 @@ fn rate_limit_warnings_emit_thresholds() {
         "expected one warning per limit for the highest crossed threshold"
     );
 }
-
 // (removed experimental resize snapshot test)
 
 #[test]

@@ -1,0 +1,6 @@
+---
+source: tui/src/modes/mode_panel.rs
+assertion_line: 500
+expression: last
+---
+■ E3101 RequiredMissing: /qa/level
