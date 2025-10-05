@@ -148,18 +148,15 @@ fn render_changes_block(rows: Vec<Row>, wrap_cols: usize, cwd: &Path) -> Vec<RtL
     let noun = if file_count == 1 { "file" } else { "files" };
     let mut header_spans: Vec<RtSpan<'static>> = vec!["• ".dim()];
     if let [row] = &rows[..] {
-        let verb = match &row.change {
-            FileChange::Add { .. } => "Added",
-            FileChange::Delete { .. } => "Deleted",
-            _ => "Edited",
-        };
-        header_spans.push(verb.bold());
+        // Upstream-compatible header wording for single-file changes
+        header_spans.push("Proposed Change".bold());
         header_spans.push(" ".into());
         header_spans.extend(render_path(row));
         header_spans.push(" ".into());
         header_spans.extend(render_line_count_summary(row.added, row.removed));
     } else {
-        header_spans.push("Edited".bold());
+        // Multi-file summary header
+        header_spans.push("Proposed Changes".bold());
         header_spans.push(format!(" {file_count} {noun} ").into());
         header_spans.extend(render_line_count_summary(total_added, total_removed));
     }

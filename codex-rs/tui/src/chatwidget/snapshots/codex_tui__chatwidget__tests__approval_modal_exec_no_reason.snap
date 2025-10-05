@@ -1,13 +1,16 @@
 ---
 source: tui/src/chatwidget/tests.rs
-expression: terminal.backend().vt100().screen().contents()
+expression: terminal.backend()
 ---
-  Would you like to run the following command?
-
-  $ echo hello world
-
-› 1. Yes, proceed
-  2. Yes, and don't ask again for this command
-  3. No, and tell Codex what to do differently esc
-
-  Press enter to confirm or esc to cancel
+"                                                                                "
+"  Would you like to run the following command?                                  "
+"                                                                                "
+"  $ echo hello world                                                            "
+"                                                                                "
+"› 1. Yes, proceed                                                               "
+"  2. Yes, and don't ask again for this command                                  "
+"  3. No, and tell Codex what to do differently esc                              "
+"                                                                                "
+"                                                                                "
+"  Press enter to confirm or esc to cancel                                       "
+"                                                                                "

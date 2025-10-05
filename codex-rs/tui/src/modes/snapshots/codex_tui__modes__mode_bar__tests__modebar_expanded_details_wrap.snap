@@ -1,0 +1,13 @@
+---
+source: tui/src/modes/mode_bar.rs
+expression: "render_lines(&view, 48)"
+---
+────────────────────────────────────────────────
+Mode: [x] review · [ ] qa                       
+▌ review — scope: project:demo                  
+▌ vars: (none)                                  
+▌ This is a very long instruction body that     
+  should wrap across multiple lines when        
+  rendered in the expanded details view.        
+────────────────────────────────────────────────
+   d Hide details  Tab Modes  ←→ Vars  ⏎ Edit  S

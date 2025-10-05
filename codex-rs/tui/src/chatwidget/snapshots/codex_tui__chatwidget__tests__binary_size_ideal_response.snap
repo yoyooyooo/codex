@@ -1,16 +1,19 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 1152
-expression: "lines[start_idx..].join(\"\\n\")"
+expression: visible_after
 ---
+/init - create an AGENTS.md file with instructions for Codex
+  /status - show current session configuration
+  /approvals - choose what Codex can do without approval
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+
 • I need to check the codex-rs repository to explain why the project's binaries
   are large. The user is likely seeking specifics about the setup: are Rust
   builds static, what features are enabled, and is debug information included?
   It could be due to static linking, included OpenSSL, or how panic handling
   is set up. I should look into the Cargo.toml file to confirm features and
   profiles without needing to edit any code. Let's get started on this!
-
-─ Worked for 0s ────────────────────────────────────────────────────────────────
 
 • I’m going to scan the workspace and Cargo manifests to see build profiles and
   dependencies that impact binary size. Then I’ll summarize the main causes.
@@ -112,8 +115,6 @@ expression: "lines[start_idx..].join(\"\\n\")"
   To present this clearly, I’ll format the final answer with two main sections:
   "Main Causes" and "Build-Mode Notes." I can also include brief suggestions for
   reducing size, but I want to stay focused on answering the user's question.
-
-─ Worked for 0s ────────────────────────────────────────────────────────────────
 
 • Here’s what’s driving size in this workspace’s binaries.
 

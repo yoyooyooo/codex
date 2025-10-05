@@ -366,7 +366,7 @@ impl Renderable for ListSelectionView {
             Constraint::Length(if self.is_searchable { 1 } else { 0 }),
             Constraint::Length(rows_height),
         ])
-        .areas(content_area.inset(Insets::vh(1, 2)));
+        .areas(content_area.inset(Insets::tlbr(0, 2, 0, 0)));
 
         if header_area.height < header_height {
             let [header_area, elision_area] =

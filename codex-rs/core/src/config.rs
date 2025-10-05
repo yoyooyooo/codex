@@ -1226,8 +1226,8 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
-
     use std::time::Duration;
+
     use tempfile::TempDir;
 
     #[test]

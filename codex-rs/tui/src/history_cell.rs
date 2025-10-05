@@ -37,9 +37,11 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Styled;
 use ratatui::style::Stylize;
+use ratatui::text::Span as RtSpan;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+use shlex::try_join as shlex_join;
 use std::any::Any;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -278,6 +280,33 @@ pub(crate) struct PatchHistoryCell {
 impl HistoryCell for PatchHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         create_diff_summary(&self.changes, &self.cwd, width as usize)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ApprovedPatchHistoryCell {
+    changes: HashMap<PathBuf, FileChange>,
+    cwd: PathBuf,
+}
+
+impl HistoryCell for ApprovedPatchHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        // 基于通用汇总渲染，然后仅替换首行标题文案为 “Change(s) Approved …”。
+        let mut lines = create_diff_summary(&self.changes, &self.cwd, width as usize);
+        if let Some(first) = lines.first_mut() {
+            // 查找并替换 "Proposed Change(s)" 为 "Change(s) Approved"，保留其余内容与样式。
+            for span in first.spans.iter_mut() {
+                let text = span.content.as_ref();
+                if text == "Proposed Change" {
+                    *span = RtSpan::from("Change Approved").bold();
+                    break;
+                } else if text == "Proposed Changes" {
+                    *span = RtSpan::from("Changes Approved").bold();
+                    break;
+                }
+            }
+        }
+        lines
     }
 }
 
@@ -1013,6 +1042,17 @@ pub(crate) fn new_patch_event(
     }
 }
 
+/// 与 new_patch_event 类似，但标题改为 “Change Approved …/Changes Approved …”。
+pub(crate) fn new_change_approved_event(
+    changes: HashMap<PathBuf, FileChange>,
+    cwd: &Path,
+) -> ApprovedPatchHistoryCell {
+    ApprovedPatchHistoryCell {
+        changes,
+        cwd: cwd.to_path_buf(),
+    }
+}
+
 pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -1036,6 +1076,14 @@ pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
     }
 
     PlainHistoryCell { lines }
+}
+
+/// Render a short cell showing a proposed command awaiting approval.
+pub(crate) fn new_proposed_command(cmd: &[String]) -> PlainHistoryCell {
+    let joined =
+        shlex_join(cmd.iter().map(std::string::String::as_str)).unwrap_or_else(|_| cmd.join(" "));
+    let line: Line<'static> = vec!["• Proposed command: ".into(), joined.into()].into();
+    PlainHistoryCell { lines: vec![line] }
 }
 
 pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistoryCell {
