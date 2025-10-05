@@ -5,7 +5,7 @@ Bring the power of the best coding agent to your application.
 ## Installation
 
 ```bash
-npm install @openai/codex-sdk
+npm install @jojoyo/codex-sdk
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ npm install @openai/codex-sdk
 Call `startThread()` and `run()` to start a thead with Codex.
 
 ```typescript
-import { Codex } from "@openai/codex-sdk";
+import { Codex } from "@jojoyo/codex-sdk";
 
 const codex = new Codex();
 const thread = codex.startThread();

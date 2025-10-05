@@ -321,14 +321,18 @@ jobs:
             tag_args+=(--tag "${NPM_TAG}")
           fi
 
+          # // !Modify: Publish all three packages under fork scope (@jojoyo)
           tarballs=(
             "codex-npm-${version}.tgz"
             "codex-responses-api-proxy-npm-${version}.tgz"
             "codex-sdk-npm-${version}.tgz"
           )
 
+          # // !Modify: Ensure new scoped packages are public on first publish
+          access_args=(--access public)
+
           for tarball in "${tarballs[@]}"; do
-            npm publish "${GITHUB_WORKSPACE}/dist/npm/${tarball}" "${tag_args[@]}"
+            npm publish "${GITHUB_WORKSPACE}/dist/npm/${tarball}" "${tag_args[@]}" "${access_args[@]}"
           done
 
   update-branch:
